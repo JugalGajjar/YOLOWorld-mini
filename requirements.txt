@@ -1,0 +1,10 @@
+numpy
+torch
+torchvision
+open_clip_torch
+ultralytics
+pycocotools
+tqdm
+numpy
+opencv-python
+matplotlib
