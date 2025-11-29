@@ -1,3 +1,7 @@
+"""
+YOLOv8 backbone module to extract multi-scale features before the Detect head
+"""
+
 from typing import Tuple, List, Optional
 
 import torch
