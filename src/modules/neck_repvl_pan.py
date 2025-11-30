@@ -76,6 +76,8 @@ class ImagePoolingAttention(nn.Module):
         """
         text_embs: (C_vocab, D)   where D = text_dim
         feats: list[(B, C_feat, H, W)]
+        returns:
+            updated_text: (C_vocab, D)
         """
         pooled_list = []
         for x in feats:
@@ -90,12 +92,20 @@ class ImagePoolingAttention(nn.Module):
         # Project visual features into text embedding space
         pooled_proj = self.feat_proj(pooled)  # (B, N, text_dim)
 
-        # Assume B == 1 for now
-        kqv = pooled_proj  # (1, N, text_dim)
-        W = text_embs.unsqueeze(0)  # (1, C_vocab, text_dim)
+        B, N, D = pooled_proj.shape
+        C_vocab = text_embs.shape[0]
 
-        updated, _ = self.mha(W, kqv, kqv)  # (1, C_vocab, text_dim)
-        return text_embs + updated.squeeze(0)
+        # Expand text embeddings for each image in the batch
+        # W: (B, C_vocab, D)
+        W = text_embs.unsqueeze(0).expand(B, C_vocab, D)
+
+        # Multi-head attention: queries = W, keys/values = pooled visual features
+        updated, _ = self.mha(W, pooled_proj, pooled_proj)  # (B, C_vocab, D)
+
+        # Aggregate across batch to get a single updated text embedding
+        updated_mean = updated.mean(dim=0)  # (C_vocab, D)
+
+        return text_embs + updated_mean
 
 
 class RepVLNeck(nn.Module):
