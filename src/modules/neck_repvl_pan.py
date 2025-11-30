@@ -11,8 +11,7 @@ import torch.nn.functional as F
 
 class TCSPLayer(nn.Module):
     """
-    Simplified Text-guided CSPLayer.
-    Modulates visual features using a text-aware mask.
+    Simplified Text-guided CSPLayer. Modulates visual features using a text-aware mask.
     """
 
     def __init__(self, channels: int, text_dim: int):
@@ -52,8 +51,7 @@ class TCSPLayer(nn.Module):
 class ImagePoolingAttention(nn.Module):
     """
     Simplified image-pooling attention:
-    pools multi-scale features and uses them as key/value
-    for attending over text embeddings.
+    pools multi-scale features and uses them as key/value for attending over text embeddings.
 
     text_dim: dimension of text embeddings (e.g., 512)
     feat_dim: dimension of visual features (e.g., 144)
@@ -82,7 +80,6 @@ class ImagePoolingAttention(nn.Module):
         pooled_list = []
         for x in feats:
             B, C, H, W = x.shape
-            # MPS-safe pooling: 80, 40, 20 are all divisible by 4
             p = F.adaptive_avg_pool2d(x, (4, 4))  # (B, C_feat, 4, 4)
             p = p.view(B, C, 16).permute(0, 2, 1)  # (B, 16, C_feat)
             pooled_list.append(p)
