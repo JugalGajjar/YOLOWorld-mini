@@ -9,5 +9,5 @@ __pycache__/
 .DS_Store
 
 # Directories
-data/
+coco/
 models/
