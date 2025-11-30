@@ -11,3 +11,4 @@ __pycache__/
 # Directories
 coco/
 models/
+logs/
