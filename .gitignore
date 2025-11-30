@@ -7,3 +7,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Directories
+data/
+models/
