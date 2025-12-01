@@ -2,140 +2,152 @@
 Loss functions for YOLOWorld-mini model
 """
 
-from typing import List, Tuple
-
+from typing import List, Tuple, Dict
 import torch
 import torch.nn.functional as F
 
 
-def build_batch_vocab(batch_texts: List[List[str]]) -> Tuple[List[str], List[dict]]:
+def build_batch_vocab(batch_texts: List[List[str]]) -> Tuple[List[str], List[List[int]]]:
     """
-    Build a vocabulary list from batch texts.
-    Returns:
-      vocab: list[str]
-      maps: list[dict[str, int]] one per image mapping category name -> vocab index
+    Given batch_texts, e.g.
+      batch_texts = [["person", "dog"], ["person", "car", "bicycle"],]
+    returns:
+      batch_vocab: sorted list of unique category names in this batch
+      per_image_maps: list of lists mapping per-image index -> batch_vocab index
+
+    Example:
+      batch_vocab = ["bicycle", "car", "dog", "person"]
+      per_image_maps[0] = [3, 2]  # "person" -> 3, "dog" -> 2
+      per_image_maps[1] = [3, 1, 0]
     """
-    all_names = set()
+    vocab_set = set()
     for texts in batch_texts:
-        all_names.update(texts)
+        vocab_set.update(texts)
+    batch_vocab = sorted(vocab_set)
 
-    vocab = sorted(all_names)
-    name_to_idx = {name: i for i, name in enumerate(vocab)}
+    # map name -> index
+    name_to_idx = {name: i for i, name in enumerate(batch_vocab)}
 
-    per_image_maps = []
+    per_image_maps: List[List[int]] = []
     for texts in batch_texts:
-        m = {t: name_to_idx[t] for t in texts}
-        per_image_maps.append(m)
+        per_image_maps.append([name_to_idx[t] for t in texts])
 
-    return vocab, per_image_maps
+    return batch_vocab, per_image_maps
 
 
-def assign_targets_to_cells(
-    boxes: torch.Tensor,
-    texts: List[str],
-    text_to_vocab_idx: dict,
+def _assign_cell_and_anchor(
+    gt_box: torch.Tensor,
     H_feat: int,
     W_feat: int,
     img_h: int,
     img_w: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_anchors: int,
+) -> int:
     """
-    For one image:
-      - boxes: (N, 4) in absolute image coords
-      - texts: list[str] category names per box
-      - text_to_vocab_idx: mapping str -> vocab index
-
+    Very simple YOLO-style assignment:
+    - Compute center of GT box in image coords.
+    - Map to feature map cell (iy, ix) at resolution H_feat x W_feat.
+    - Use anchor 0 for now.
     Returns:
-      pos_indices: (N_pos,) indices in [0, H_feat*W_feat) for anchor 0
-      pos_labels: (N_pos,) vocab indices
+      region_idx in [0, H_feat * W_feat * num_anchors)
     """
-    if boxes.numel() == 0:
-        return (
-            torch.zeros((0,), dtype=torch.long, device=boxes.device),
-            torch.zeros((0,), dtype=torch.long, device=boxes.device),
-        )
+    x1, y1, x2, y2 = gt_box.tolist()
+    cx = 0.5 * (x1 + x2)
+    cy = 0.5 * (y1 + y2)
 
-    # compute box centers in image coords
-    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    cx = (x1 + x2) / 2.0
-    cy = (y1 + y2) / 2.0
+    # normalize to [0, 1], then to grid
+    gx = cx / img_w
+    gy = cy / img_h
 
-    # map centers to feature map indices
-    stride_x = img_w / W_feat
-    stride_y = img_h / H_feat
+    ix = min(W_feat - 1, max(0, int(gx * W_feat)))
+    iy = min(H_feat - 1, max(0, int(gy * H_feat)))
 
-    gx = torch.clamp((cx / stride_x).long(), 0, W_feat - 1)
-    gy = torch.clamp((cy / stride_y).long(), 0, H_feat - 1)
-
-    cell_idx = gy * W_feat + gx   # (N,)
-
-    # vocab indices
-    labels = [text_to_vocab_idx[t] for t in texts]
-    labels = torch.tensor(labels, dtype=torch.long, device=boxes.device)
-
-    return cell_idx, labels
+    cell_idx = iy * W_feat + ix
+    anchor_idx = 0  # you can later experiment with smarter anchor choice
+    region_idx = cell_idx * num_anchors + anchor_idx
+    return region_idx
 
 
 def yolo_world_classification_loss(
-    boxes_pred: torch.Tensor,    # (B, K, 4) not used now, but kept for extensibility
-    logits: torch.Tensor,        # (B, K, C_vocab)
-    batch_boxes: List[torch.Tensor],
-    batch_texts: List[List[str]],
-    batch_vocab: List[str],
-    per_image_maps: List[dict],
+    boxes_pred: torch.Tensor,  # (B, K, 4), predicted boxes in xyxy (image coords)
+    logits: torch.Tensor,  # (B, K, V), class logits for batch vocab
+    batch_boxes: List[torch.Tensor],  # length B, each (N_i, 4) in xyxy (image coords)
+    batch_texts: List[List[str]],  # length B, list of category names per GT box
+    batch_vocab: List[str],  # length V, global vocab for this batch
+    per_image_maps: List[List[int]],  # length B, indices mapping per-image text -> vocab idx
     H_feat: int,
     W_feat: int,
-    img_h: int = 640,
-    img_w: int = 640,
+    img_h: int,
+    img_w: int,
+    num_anchors: int = 3,
+    lambda_box: float = 1.0,
 ) -> torch.Tensor:
     """
-    Compute simple classification loss:
-      - For each GT box, find its cell index (anchor 0)
-      - Use CE loss on logits for that cell vs its vocab index.
+    Detection loss:
+      - classification: BCE-with-logits on the vocab dimension for assigned region
+      - box regression: Smooth L1 between predicted box and GT box at assigned region
 
-    boxes_pred is currently unused but passed for future extension.
+    We keep the function name `yolo_world_classification_loss` so your train.py
+    does not need a big refactor, but now it includes a box loss as well.
     """
+
     device = logits.device
-    B, K, C_vocab = logits.shape
-    assert C_vocab == len(batch_vocab)
+    B, K, V = logits.shape
 
-    logits_flat = logits.view(B * K, C_vocab)
+    # Basic checks
+    assert V == len(batch_vocab), "Vocab size mismatch between logits and batch_vocab"
 
-    pos_indices_all = []
-    pos_labels_all = []
+    total_cls_loss = torch.zeros((), device=device)
+    total_box_loss = torch.zeros((), device=device)
+    num_pos = 0
 
     for b in range(B):
-        boxes = batch_boxes[b].to(device)
-        texts = batch_texts[b]
-        text_to_vocab_idx = per_image_maps[b]
-
-        pos_cells, pos_labels = assign_targets_to_cells(
-            boxes,
-            texts,
-            text_to_vocab_idx,
-            H_feat,
-            W_feat,
-            img_h,
-            img_w,
-        )
-
-        if pos_cells.numel() == 0:
+        gt_boxes = batch_boxes[b]  # (N_i, 4)
+        if gt_boxes.numel() == 0:
             continue
 
-        # anchor 0 only: index in [0, H*W) → global index shift
-        base = b * K
-        # K = num_anchors * H * W, but we only use anchor 0 → offset = cell_idx
-        pos_indices_all.append(base + pos_cells)
-        pos_labels_all.append(pos_labels)
+        gt_texts = batch_texts[b]  # list[str]
+        gt_vocab_idxs = per_image_maps[b]  # list[int], same length as gt_texts
 
-    if not pos_indices_all:
-        # no objects in this batch
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        for j, gt_box in enumerate(gt_boxes):
+            v_idx = gt_vocab_idxs[j]  # vocab index for this GT box
 
-    pos_indices = torch.cat(pos_indices_all, dim=0)
-    pos_labels = torch.cat(pos_labels_all, dim=0)
+            # assign one region index for this GT
+            region_idx = _assign_cell_and_anchor(
+                gt_box=gt_box,
+                H_feat=H_feat,
+                W_feat=W_feat,
+                img_h=img_h,
+                img_w=img_w,
+                num_anchors=num_anchors,
+            )
 
-    pos_logits = logits_flat[pos_indices]  # (N_pos, C_vocab)
+            if region_idx < 0 or region_idx >= K:
+                # should not normally happen, but be safe
+                continue
 
-    loss = F.cross_entropy(pos_logits, pos_labels)
-    return loss
+            # classification target: all zeros except 1 at v_idx
+            target_cls = torch.zeros((V,), device=device)
+            target_cls[v_idx] = 1.0
+
+            pred_logits = logits[b, region_idx]  # (V,)
+            cls_loss = F.binary_cross_entropy_with_logits(pred_logits, target_cls)
+
+            # box regression target: smooth L1 between predicted box and GT box
+            pred_box = boxes_pred[b, region_idx]  # (4,)
+            box_loss = F.smooth_l1_loss(pred_box, gt_box.to(device), reduction="mean")
+
+            total_cls_loss += cls_loss
+            total_box_loss += box_loss
+            num_pos += 1
+
+    if num_pos == 0:
+        # no objects in this batch: loss is 0, but you might also want to
+        # add some negative-only classification loss later
+        return total_cls_loss + lambda_box * total_box_loss
+
+    total_cls_loss = total_cls_loss / num_pos
+    total_box_loss = total_box_loss / num_pos
+
+    total_loss = total_cls_loss + lambda_box * total_box_loss
+    return total_loss
