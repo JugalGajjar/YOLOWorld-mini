@@ -25,6 +25,20 @@ class DataConfig:
 
 
 @dataclass
+class TrainConfig:
+    device: str = "cuda"
+    batch_size: int = 16
+    epochs: int = 20
+    lr: float = 1e-4
+    num_workers: int = 4
+    max_vocab_size: int = 80
+    log_interval: int = 50
+    save_interval: int = 5
+    output_dir: Path = Path("outputs")
+
+
+@dataclass
 class Config:
     model: ModelConfig = ModelConfig()
     data: DataConfig = DataConfig()
+    train: TrainConfig = TrainConfig()
