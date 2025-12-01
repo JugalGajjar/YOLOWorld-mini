@@ -75,6 +75,8 @@ def main():
                 W_feat=W_feat,
                 img_h=640,
                 img_w=640,
+                num_anchors=cfg.model.num_anchors,
+                lambda_box=1.0,
             )
 
             optimizer.zero_grad()
