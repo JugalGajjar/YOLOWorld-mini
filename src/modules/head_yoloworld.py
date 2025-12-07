@@ -1,8 +1,14 @@
 """
-Region embeddings + cosine similarity to text embeddings
+YOLOWorld-mini head: single-scale detection on P3.
+
+Outputs:
+    boxes_pred: (B, K, 4) in [0,1] xyxy
+    cls_logits: (B, K, C_vocab) from CLIP-style similarity
+    obj_logits: (B, K)
+    region_embs: (B, K, text_dim)
 """
 
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
@@ -10,52 +16,55 @@ import torch.nn.functional as F
 
 
 class YOLOWorldHead(nn.Module):
-    """
-    YOLO-World style head:
-      - predicts box offsets and region embeddings from a feature map
-      - computes logits against a text vocabulary using cosine similarity
-    """
-
-    def __init__(self, in_channels: int, num_anchors: int = 3, embed_dim: int = 512):
+    def __init__(self, in_channels: int, text_dim: int):
         super().__init__()
-        self.num_anchors = num_anchors
-        self.embed_dim = embed_dim
+        self.text_dim = text_dim
 
-        self.box_conv = nn.Conv2d(in_channels, num_anchors * 4, kernel_size=1)
-        self.emb_conv = nn.Conv2d(in_channels, num_anchors * embed_dim, kernel_size=1)
+        # Project P3 features to region embedding space.
+        self.embed_conv = nn.Conv2d(in_channels, text_dim, kernel_size=1)
 
-        self.alpha = nn.Parameter(torch.tensor(10.0))
-        self.beta = nn.Parameter(torch.tensor(0.0))
+        # Box regression + objectness from region embeddings.
+        self.box_head = nn.Conv2d(text_dim, 4, kernel_size=1)
+        self.obj_head = nn.Conv2d(text_dim, 1, kernel_size=1)
 
     def forward(
         self,
-        feat: torch.Tensor,
+        feats: List[torch.Tensor],
         text_embs: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ):
         """
-        feat: (B, C, H, W)
-        text_embs: (C_vocab, D)
+        Args:
+            feats: [P3, P4, P5]; we only use P3 for now.
+            text_embs: (C_vocab, text_dim), normalized.
 
-        returns:
-          boxes: (B, K, 4)
-          logits: (B, K, C_vocab)
-          region_embs: (B, K, D)
+        Returns:
+            boxes_pred: (B, K, 4) in [0,1] xyxy
+            cls_logits: (B, K, C_vocab)
+            obj_logits: (B, K)
+            region_embs: (B, K, text_dim) normalized
         """
-        B, _, H, W = feat.shape
-        C_vocab, D = text_embs.shape
+        p3 = feats[0]  # (B, C, H, W)
 
-        box_raw = self.box_conv(feat)  # (B, A*4, H, W)
-        emb_raw = self.emb_conv(feat)  # (B, A*D, H, W)
+        # Region embeddings
+        emb = self.embed_conv(p3)  # (B, D, H, W)
+        B, D, H, W = emb.shape
+        K = H * W
 
-        box_raw = box_raw.view(B, self.num_anchors, 4, H, W)
-        box_raw = box_raw.permute(0, 1, 3, 4, 2).reshape(B, -1, 4)  # (B, K, 4)
+        region_embs = emb.permute(0, 2, 3, 1).reshape(B, K, D)  # (B, K, D)
+        region_embs = F.normalize(region_embs, dim=-1)
 
-        emb_raw = emb_raw.view(B, self.num_anchors, self.embed_dim, H, W)
-        emb_raw = emb_raw.permute(0, 1, 3, 4, 2).reshape(B, -1, self.embed_dim)  # (B, K, D)
+        # Bounding boxes in normalized xyxy
+        box_logits = self.box_head(emb)  # (B, 4, H, W)
+        box_logits = box_logits.permute(0, 2, 3, 1).reshape(B, K, 4)
+        boxes_pred = box_logits.sigmoid()  # [0,1] xyxy
 
-        e = F.normalize(emb_raw, dim=-1)  # (B, K, D)
-        w = F.normalize(text_embs, dim=-1)  # (C_vocab, D)
+        # Objectness
+        obj_logits = self.obj_head(emb)  # (B, 1, H, W)
+        obj_logits = obj_logits.permute(0, 2, 3, 1).reshape(B, K)
 
-        logits = self.alpha * torch.matmul(e, w.t()) + self.beta  # (B, K, C_vocab)
+        # Classification logits via CLIP-style similarity
+        # text_embs: (C_vocab, D)
+        text_norm = F.normalize(text_embs, dim=-1)  # safety
+        cls_logits = torch.matmul(region_embs, text_norm.T)  # (B, K, C_vocab)
 
-        return box_raw, logits, emb_raw
+        return boxes_pred, cls_logits, obj_logits, region_embs
