@@ -1,72 +1,92 @@
 """
-YOLOv8 Backbone -> RepVL-PAN -> Head
+Top-level YOLOWorld-mini model:
+
+    Backbone (YOLO-style CNN)
+    Neck (simple channel-unifying PAN)
+    Head (single-scale detection + region embeddings)
+    Text encoder (CLIP)
 """
 
-from typing import List, Tuple
+from typing import List
 
 import torch
 import torch.nn as nn
 
-from modules.backbone_yolov8 import YOLOv8Backbone
-from modules.neck_repvl_pan import RepVLNeck
-from modules.head_yoloworld import YOLOWorldHead
-from modules.text_encoder import CLIPTextEncoder
 from utils.config import Config
+from modules.backbone_yolov8 import YOLOv8Backbone
+from modules.neck_repvl_pan import RepVLPAN
+from modules.head_yoloworld import YOLOWorldHead
+from modules.text_encoder import TextEncoder
 
 
 class YOLOWorldMini(nn.Module):
-    """
-    Small-scale YOLO-World style model:
-      - YOLOv8 backbone
-      - simplified RepVL-PAN neck
-      - region-text contrastive head
-    """
-
-    def __init__(self, cfg: Config = Config()):
+    def __init__(self, cfg: Config):
         super().__init__()
-        mcfg = cfg.model
 
-        self.backbone = YOLOv8Backbone(variant=mcfg.backbone_variant)
-        channels_list = mcfg.feat_channels  # (144, 144, 144)
+        self.cfg = cfg
+        img_feat_dim = cfg.model.img_feat_dim
+        text_dim = cfg.model.text_dim
 
-        self.text_encoder = CLIPTextEncoder(
-            model_name=mcfg.clip_model_name,
-            pretrained=mcfg.clip_pretrained,
+        # Backbone
+        self.backbone = YOLOv8Backbone(
+            img_channels=3,
+            img_feat_dim=img_feat_dim,
         )
 
-        self.neck = RepVLNeck(channels_list=channels_list, text_dim=mcfg.embed_dim)
-        # For now, attaching head to P3 (highest resolution)
+        # Text encoder (frozen CLIP)
+        self.text_encoder = TextEncoder(
+            clip_model_name=cfg.model.clip_model_name,
+            clip_pretrained_tag=cfg.model.clip_pretrained_tag,
+            text_dim=text_dim,
+        )
+
+        # Neck + head
+        self.neck = RepVLPAN(
+            in_channels=self.backbone.out_channels,
+            text_dim=text_dim,
+            out_channels=img_feat_dim,
+        )
         self.head = YOLOWorldHead(
-            in_channels=channels_list[0],
-            num_anchors=mcfg.num_anchors,
-            embed_dim=mcfg.embed_dim,
+            in_channels=img_feat_dim,
+            text_dim=text_dim,
         )
+
+        # Detection grid size (P3, 1/8 resolution).
+        self.img_size = cfg.data.img_size
+        self.H_feat = self.img_size // 8
+        self.W_feat = self.img_size // 8
 
     def forward(
         self,
         images: torch.Tensor,
         vocab_texts: List[str],
-        device: torch.device,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device: torch.device = None,
+    ):
         """
-        images: (B, 3, H, W)
-        vocab_texts: list of category prompts
-        device: torch.device
+        Args:
+            images: (B, 3, H, W)  (H=W=cfg.data.img_size)
+            vocab_texts: list of category names used as vocabulary.
+
+        Returns:
+            boxes_pred: (B, K, 4), normalized [0,1] xyxy
+            cls_logits: (B, K, C_vocab)
+            obj_logits: (B, K)
+            region_embs: (B, K, text_dim)
+            text_embs: (C_vocab, text_dim)
         """
-        # 1. encode vocab
-        text_embs = self.text_encoder.encode_texts(vocab_texts, device=device)  # (C_vocab, D)
+        if device is not None:
+            images = images.to(device)
 
-        # 2. backbone features
-        p3, p4, p5 = self.backbone(images)
-        feats = [p3, p4, p5]
+        feats = self.backbone(images)  # [P3,P4,P5]
 
-        # 3. RepVL neck
+        # Encode vocabulary texts
+        text_embs = self.text_encoder.encode_texts(vocab_texts)  # (C_vocab, text_dim)
+
+        # Neck + head
         fused_feats, updated_text = self.neck(feats, text_embs)
+        boxes_pred, cls_logits, obj_logits, region_embs = self.head(
+            fused_feats,
+            updated_text,
+        )
 
-        # Use P3 for head
-        p3_fused = fused_feats[0]
-
-        # 4. head: boxes + logits
-        boxes, logits, region_embs = self.head(p3_fused, updated_text)
-
-        return boxes, logits, region_embs
+        return boxes_pred, cls_logits, obj_logits, region_embs, updated_text
