@@ -1,5 +1,5 @@
 """
-COCO-mini dataset class
+COCO-mini dataset class with configurable image size.
 """
 
 from typing import Dict, Any, List
@@ -16,27 +16,32 @@ class COCOMiniDataset(Dataset):
     """
     COCO-mini dataset:
       - uses a subset JSON (instances_train2017_mini.json)
-      - returns image tensor (3, 640, 640), boxes in absolute coords,
-        labels, and text category names.
+      - returns:
+          image tensor (3, img_size, img_size),
+          boxes (N, 4) in absolute coords on resized image,
+          labels (N),
+          texts: list of category names,
+          image_id, orig_size, new_size.
     """
 
-    def __init__(self, images_dir: Path, ann_file: Path, transforms_fn=None):
+    def __init__(self, images_dir: Path, ann_file: Path, img_size: int = 640, transforms_fn=None):
         super().__init__()
         self.images_dir = Path(images_dir)
         self.coco = COCO(str(ann_file))
         self.transforms_fn = transforms_fn
+        self.img_size = img_size
 
         self.img_ids = list(self.coco.imgs.keys())
         self.cat_id_to_name = {
             cat["id"]: cat["name"] for cat in self.coco.loadCats(self.coco.getCatIds())
         }
 
-        # default transform: resize to 640x640, ToTensor
+        # Default transform: resize to img_size x img_size, ToTensor
         if self.transforms_fn is None:
             self.transforms_fn = transforms.Compose(
                 [
-                    transforms.Resize((640, 640)),
-                    transforms.ToTensor(),   # [0,1], shape (3, H, W)
+                    transforms.Resize((img_size, img_size)),
+                    transforms.ToTensor(),  # [0,1], shape (3, H, W)
                 ]
             )
 
@@ -51,7 +56,7 @@ class COCOMiniDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         orig_w, orig_h = image.size
 
-        # annotations
+        # Annotations
         ann_ids = self.coco.getAnnIds(imgIds=[img_id])
         anns = self.coco.loadAnns(ann_ids)
 
@@ -65,12 +70,12 @@ class COCOMiniDataset(Dataset):
             labels.append(ann["category_id"])
             texts.append(self.cat_id_to_name[ann["category_id"]])
 
-        # convert to tensors
+        # Convert to tensors
         boxes = torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32)
         labels = torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64)
 
-        # apply image transform and scale boxes accordingly
-        image_t = self.transforms_fn(image)  # (3, 640, 640)
+        # Apply image transform and scale boxes accordingly
+        image_t = self.transforms_fn(image)  # (3, img_size, img_size)
         _, new_h, new_w = image_t.shape
 
         scale_x = new_w / orig_w
