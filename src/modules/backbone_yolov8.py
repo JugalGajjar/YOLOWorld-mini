@@ -1,113 +1,76 @@
 """
-YOLOv8 backbone module to extract multi-scale features before the Detect head
+Lightweight YOLO-style backbone used by YOLOWorld-mini.
+
+NOTE: This does NOT depend on ultralytics or external YOLOv8 weights.
+It is named YOLOv8Backbone for compatibility but is a standalone CNN.
+
+Outputs:
+    P3: 1/8 resolution, channels = img_feat_dim
+    P4: 1/16 resolution
+    P5: 1/32 resolution
 """
 
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 
 import torch
 import torch.nn as nn
-from ultralytics import YOLO
+import torch.nn.functional as F
+
+
+class ConvBNAct(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, k: int = 3, s: int = 1, p: int = None):
+        super().__init__()
+        if p is None:
+            p = k // 2
+        self.conv = nn.Conv2d(in_ch, out_ch, k, stride=s, padding=p, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.act = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.bn(self.conv(x)))
 
 
 class YOLOv8Backbone(nn.Module):
-    """
-    Wraps a YOLOv8 model and exposes the multi-scale feature maps that feed into the 
-    Detect head (typically three scales).
-    """
-
-    def __init__(self, variant: str = "yolov8s.pt", pretrained: bool = True):
+    def __init__(self, img_channels: int = 3, img_feat_dim: int = 256):
         super().__init__()
+        base = img_feat_dim // 4  # e.g. 64 if img_feat_dim=256
 
-        # Load YOLOv8 model
-        yolo = YOLO(variant)
-        task_model = yolo.model  # BaseModel / DetectionModel
+        # Stem
+        self.stem = ConvBNAct(img_channels, base, k=3, s=2)   # /2
 
-        if not hasattr(task_model, "model"):
-            raise RuntimeError("Unexpected YOLO model structure: missing 'model' attribute.")
+        # Stages down to /32
+        self.stage2 = ConvBNAct(base, base * 2, k=3, s=2)  # /4
+        self.stage3 = ConvBNAct(base * 2, base * 4, k=3, s=2)  # /8  -> P3
+        self.stage4 = ConvBNAct(base * 4, base * 8, k=3, s=2)  # /16 -> P4
+        self.stage5 = ConvBNAct(base * 8, base * 16, k=3, s=2)  # /32 -> P5
 
-        layers = task_model.model  # nn.ModuleList
-        if len(layers) == 0:
-            raise RuntimeError("YOLO model has no layers in .model.")
+        # Optional extra convs for capacity
+        self.p3_conv = ConvBNAct(base * 4, img_feat_dim, k=3, s=1)
+        self.p4_conv = ConvBNAct(base * 8, img_feat_dim, k=3, s=1)
+        self.p5_conv = ConvBNAct(base * 16, img_feat_dim, k=3, s=1)
 
-        detect_layer = layers[-1]
+        # Expose out_channels for downstream modules (P3, P4, P5).
+        self.out_channels: Tuple[int, int, int] = (img_feat_dim, img_feat_dim, img_feat_dim)
 
-        if not isinstance(detect_layer, nn.Module):
-            raise RuntimeError("Last layer of YOLO model is not an nn.Module.")
-
-        self.task_model = task_model
-        self.detect_layer = detect_layer
-
-        # This will store the features captured by the hook
-        self._captured_feats: Optional[List[torch.Tensor]] = None
-
-        # Register forward hook on the Detect head
-        self.detect_layer.register_forward_hook(self._detect_forward_hook)
-
-    def _detect_forward_hook(self, module: nn.Module, inputs, output):
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
-        Forward hook on the Detect head. Captures the input feature maps
-        that are fed into the Detect layer during a forward pass.
+        Args:
+            x: (B, 3, H, W), e.g. 640x640
+
+        Returns:
+            [P3, P4, P5]:
+                P3: (B, C, H/8,  W/8)
+                P4: (B, C, H/16, W/16)
+                P5: (B, C, H/32, W/32)
         """
-        if not inputs:
-            self._captured_feats = None
-            return
+        x = self.stem(x)  # /2
+        x = self.stage2(x)  # /4
+        c3 = self.stage3(x)  # /8
+        c4 = self.stage4(c3)  # /16
+        c5 = self.stage5(c4)  # /32
 
-        x = inputs[0]  # this should be a list of tensors
-        if isinstance(x, (list, tuple)) and all(isinstance(t, torch.Tensor) for t in x):
-            self._captured_feats = list(x)
-        else:
-            # Unexpected format; keep for debugging
-            self._captured_feats = None
+        p3 = self.p3_conv(c3)
+        p4 = self.p4_conv(c4)
+        p5 = self.p5_conv(c5)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Run a normal YOLOv8 forward pass, but return only the feature maps (P3, P4, P5), 
-        each a tensor (B, C_i, H_i, W_i), that are fed into the Detect head.
-        """
-        # Reset captured features
-        self._captured_feats = None
-
-        # Run full model forward to trigger the Detect head and its hook
-        _ = self.task_model(x)
-
-        if self._captured_feats is None:
-            raise RuntimeError(
-                "Detect head hook did not capture any features. "
-                "The YOLO model structure may be different than expected."
-            )
-
-        feats = self._captured_feats
-
-        if len(feats) < 3:
-            raise RuntimeError(
-                f"Expected at least 3 feature maps from Detect head input, "
-                f"but got {len(feats)}."
-            )
-
-        # We take the last 3 detection scales
-        p3, p4, p5 = feats[-3], feats[-2], feats[-1]
-        return p3, p4, p5
-
-
-# Simple test
-if __name__ == "__main__":
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    print("Using device:", device)
-
-    model = YOLOv8Backbone(variant="models/yolov8s.pt")
-    model.to(device)
-    model.eval()
-
-    x = torch.randn(1, 3, 640, 640, device=device)
-
-    with torch.no_grad():
-        p3, p4, p5 = model(x)
-
-    print("P3 shape:", p3.shape)
-    print("P4 shape:", p4.shape)
-    print("P5 shape:", p5.shape)
+        return [p3, p4, p5]
