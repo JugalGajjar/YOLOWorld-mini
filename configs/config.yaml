@@ -1,0 +1,115 @@
+# Dataset
+data:
+  root: "data/coco"
+  train_ann: "annotations/instances_train2017_mini.json"
+  val_ann: "annotations/instances_val2017.json"
+  train_img_dir: "train2017"
+  val_img_dir: "val2017"
+  num_classes: 80
+  img_size: 640
+  num_workers: 4 # Will be adjusted based on device
+
+# Model
+model:
+  backbone: "yolov8s"
+  pretrained_yolo: "models/yolov8s.pt"
+  clip_model: "ViT-B/32"
+  freeze_clip: true
+  text_dim: 512 # CLIP ViT-B/32 text embedding dimension
+  max_det: 300
+  
+  # RepVL-PAN settings
+  repvl_pan:
+    use_text_guide: true
+    text_channels: [256, 512, 512] # Text conditioning at different scales
+    use_cross_attention: true
+    num_attention_heads: 8
+
+# Training
+train:
+  epochs: 50
+  batch_size: 16 # Will be adjusted based on device
+  num_gpus: 1
+  
+  # Device selection: 'auto', 'cuda', 'mps', or 'cpu'
+  device: "auto"
+  
+  optimizer: "AdamW"
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  warmup_epochs: 3
+  
+  # Loss weights
+  box_loss_weight: 7.5
+  cls_loss_weight: 0.5
+  dfl_loss_weight: 1.5
+  contrastive_loss_weight: 1.0
+  
+  # Contrastive learning
+  contrastive_temperature: 0.01
+  negative_samples_per_batch: 100
+  
+  # Online vocabulary
+  vocab_size_per_batch: 100 # Max vocabulary size per batch
+  use_negative_categories: true
+  
+  # Augmentation
+  augment:
+    hsv_h: 0.015
+    hsv_s: 0.7
+    hsv_v: 0.4
+    degrees: 0.0
+    translate: 0.1
+    scale: 0.5
+    shear: 0.0
+    flipud: 0.0
+    fliplr: 0.5
+    mosaic: 1.0
+    mixup: 0.0
+
+# Validation
+val:
+  batch_size: 32 # Will be adjusted based on device
+  conf_threshold: 0.001
+  iou_threshold: 0.7
+  max_det: 300
+
+# Zero-shot evaluation
+zero_shot:
+  custom_categories:
+    - "red car"
+    - "person wearing hat"
+    - "dog running"
+    - "laptop on desk"
+    - "pizza slice"
+
+# Logging
+logging:
+  log_dir: "logs"
+  save_dir: "outputs"
+  save_period: 5 # Save checkpoint every N epochs
+  log_interval: 100 # Log every N iterations
+  use_wandb: false
+  wandb_project: "yolo-world-mini"
+
+# Paths
+paths:
+  checkpoint: null # Path to resume from checkpoint
+  save_best: true
+
+# Device-specific optimizations
+device_settings:
+  cuda:
+    pin_memory: true
+    persistent_workers: true
+    recommended_batch_size: 16
+  
+  mps:
+    pin_memory: false
+    persistent_workers: false
+    recommended_batch_size: 32
+  
+  cpu:
+    pin_memory: false
+    persistent_workers: false
+    recommended_batch_size: 4
