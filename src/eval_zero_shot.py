@@ -1,225 +1,271 @@
 """
-Zero-shot evaluation script for YOLOWorld-mini model on COCO dataset.
-
-Features:
-- Samples up to 1000 images from the original COCO val2017 split
-  (not the coco-mini subset).
-- For each checkpoint in cfg.train.output_dir matching 'yoloworld_mini_epoch*.pt':
-    * Computes a simple image-level top-1 accuracy:
-        - Build vocab from ground-truth category names in the image.
-        - Model predicts one category per image (over all regions and classes).
-        - A prediction is counted correct if the predicted category is present
-          in the ground-truth categories of that image.
-    * Saves a few visualization images with top predicted box + label.
+Zero-Shot Evaluation Script for YOLO-World
+Test the model with custom vocabulary not in COCO
 """
 
-import random
+import os
+import sys
+import argparse
 from pathlib import Path
+import json
+from tqdm import tqdm
 
 import torch
-from torch.utils.data import DataLoader, Subset
-from torchvision import transforms
-from PIL import ImageDraw
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
-from utils.config import Config
-from utils.collate import coco_collate
-from utils.logging_utils import get_logger
-from data.coco_mini import COCOMiniDataset
-from modules.yolo_world_model import YOLOWorldMini
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent))
 
-
-def tensor_to_pil(t: torch.Tensor) -> "Image.Image":
-    """
-    Convert a (3, H, W) tensor in [0,1] to a PIL image.
-    """
-    to_pil = transforms.ToPILImage()
-    return to_pil(t.cpu())
+from modules.yolo_world import build_yolo_world
+from utils.utils import load_config, setup_logger
+from utils.device import get_available_device, print_device_info
 
 
-def draw_single_detection(image_t: torch.Tensor, box: torch.Tensor, label: str,
-                          score: float) -> "Image.Image":
-    """
-    Draw a single bounding box and label on the image.
-    image_t: (3, H, W) in [0,1]
-    box: (4,) xyxy in absolute coords (may be unordered, so we sanitize it)
-    """
-    img = tensor_to_pil(image_t)
-    draw = ImageDraw.Draw(img)
-    W, H = img.size  # note: PIL uses (width, height)
-
-    x1, y1, x2, y2 = box.tolist()
-
-    # 1) ensure x1 <= x2, y1 <= y2
-    x1, x2 = sorted([x1, x2])
-    y1, y2 = sorted([y1, y2])
-
-    # 2) clamp to image bounds
-    x1 = max(0, min(W - 1, x1))
-    x2 = max(0, min(W - 1, x2))
-    y1 = max(0, min(H - 1, y1))
-    y2 = max(0, min(H - 1, y2))
-
-    # 3) if degenerate box, just return image without drawing
-    if x2 <= x1 or y2 <= y1:
-        return img
-
-    draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-    text = f"{label} ({score:.2f})"
-    draw.text((x1 + 4, y1 + 4), text, fill="red")
-
-    return img
-
-
-def evaluate_checkpoint(cfg: Config, ckpt_path: Path, dataset: Subset, device: torch.device,
-                        logger, max_vis_images: int = 8) -> float:
-    """
-    Evaluate a single checkpoint on the given dataset subset.
-    Returns:
-      image-level top-1 accuracy.
-    Also saves a few visualization images.
-    """
-
-    logger.info(f"Evaluating checkpoint: {ckpt_path.name}")
-
-    loader = DataLoader(
-        dataset,
-        batch_size=4,
-        shuffle=False,
-        num_workers=cfg.train.num_workers,
-        collate_fn=coco_collate,
-    )
-
-    model = YOLOWorldMini(cfg).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-
-    total = 0
-    correct = 0
-
-    vis_dir = cfg.train.output_dir / "vis"
-    vis_dir.mkdir(parents=True, exist_ok=True)
-    vis_count = 0
-
-    with torch.no_grad():
-        for batch in loader:
-            images = batch["images"].to(device)  # (B, 3, 640, 640)
-            batch_texts = batch["texts"]  # list[list[str]]
-            image_ids = batch["image_ids"]  # list[int]
-
-            # Build vocab for this batch from GT category names
-            all_names = sorted({t for texts in batch_texts for t in texts})
-            if len(all_names) == 0:
-                # skip images with no annotations
-                continue
-
-            boxes_pred, logits, region_embs = model(
-                images, vocab_texts=all_names, device=device
+class ZeroShotEvaluator:
+    """Evaluator for zero-shot detection with custom vocabulary"""
+    
+    def __init__(self, config: dict, checkpoint_path: str, device: str = 'auto'):
+        self.config = config
+        
+        # Setup device with auto-detection
+        if device == 'auto':
+            self.device, device_name = get_available_device('auto')
+            print(f"\nAuto-detected device: {device_name}\n")
+        else:
+            self.device, device_name = get_available_device(device)
+            print(f"\nUsing device: {device_name}\n")
+        
+        self.logger = setup_logger('logs', 'zero_shot_eval')
+        
+        # Build model
+        self.logger.info("Building YOLO-World model...")
+        self.model = build_yolo_world(config, self.device)
+        
+        # Load checkpoint
+        self.load_checkpoint(checkpoint_path)
+        
+        self.model.eval()
+    
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load model checkpoint"""
+        self.logger.info(f"Loading checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        if 'model_state_dict' in checkpoint:
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            self.model.load_state_dict(checkpoint)
+        
+        self.logger.info("Checkpoint loaded successfully")
+    
+    def preprocess_image(self, image_path: str, img_size: int = 640):
+        """Preprocess image for inference"""
+        # Load image
+        img = Image.open(image_path).convert('RGB')
+        original_size = img.size  # (W, H)
+        
+        # Resize
+        img = img.resize((img_size, img_size), Image.BILINEAR)
+        
+        # To tensor
+        img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
+        img_tensor = img_tensor.permute(2, 0, 1)  # (3, H, W)
+        
+        return img_tensor.unsqueeze(0), original_size
+    
+    @torch.no_grad()
+    def predict(
+        self,
+        image_path: str,
+        category_names: list,
+        conf_threshold: float = 0.25,
+        iou_threshold: float = 0.7,
+        max_det: int = 300
+    ):
+        """
+        Predict objects in image with custom vocabulary
+        
+        Args:
+            image_path: Path to image
+            category_names: List of category names to detect
+            conf_threshold: Confidence threshold
+            iou_threshold: IoU threshold for NMS
+            max_det: Maximum detections
+        
+        Returns:
+            predictions: Dictionary with detections
+        """
+        # Preprocess
+        img_tensor, original_size = self.preprocess_image(
+            image_path,
+            self.config['data']['img_size']
+        )
+        img_tensor = img_tensor.to(self.device)
+        
+        # Predict
+        predictions = self.model.predict(
+            img_tensor,
+            category_names=category_names,
+            conf_threshold=conf_threshold,
+            iou_threshold=iou_threshold,
+            max_det=max_det
+        )
+        
+        # Scale boxes back to original size
+        img_size = self.config['data']['img_size']
+        scale_x = original_size[0] / img_size
+        scale_y = original_size[1] / img_size
+        
+        for pred in predictions:
+            if len(pred['boxes']) > 0:
+                pred['boxes'][:, [0, 2]] *= scale_x
+                pred['boxes'][:, [1, 3]] *= scale_y
+        
+        return predictions[0], original_size
+    
+    def visualize_predictions(
+        self,
+        image_path: str,
+        predictions: dict,
+        category_names: list,
+        save_path: str = None
+    ):
+        """Visualize predictions on image"""
+        # Load image
+        img = Image.open(image_path).convert('RGB')
+        
+        # Create figure
+        fig, ax = plt.subplots(1, figsize=(12, 8))
+        ax.imshow(img)
+        
+        # Draw boxes
+        boxes = predictions['boxes'].cpu().numpy()
+        scores = predictions['scores'].cpu().numpy()
+        labels = predictions['labels'].cpu().numpy()
+        
+        colors = plt.cm.hsv(np.linspace(0, 1, len(category_names)))
+        
+        for box, score, label in zip(boxes, scores, labels):
+            x1, y1, x2, y2 = box
+            w, h = x2 - x1, y2 - y1
+            
+            # Draw rectangle
+            rect = patches.Rectangle(
+                (x1, y1), w, h,
+                linewidth=2,
+                edgecolor=colors[label],
+                facecolor='none'
             )
-
-            B, K, C = logits.shape
-            probs = torch.softmax(logits, dim=-1)
-
-            # For each image:
-            for b in range(B):
-                gt_names = set(batch_texts[b])
-                if len(gt_names) == 0:
-                    continue
-
-                # Find global top prediction over regions and classes
-                probs_b = probs[b]  # (K, C)
-                top_val, top_idx = probs_b.view(-1).max(dim=0)
-                flat_idx = top_idx.item()
-                region_idx = flat_idx // C
-                class_idx = flat_idx % C
-
-                pred_name = all_names[class_idx]
-                score = top_val.item()
-
-                total += 1
-                if pred_name in gt_names:
-                    correct += 1
-
-                # Save a few visualizations
-                if vis_count < max_vis_images:
-                    box = boxes_pred[b, region_idx]  # (4,)
-                    img_t = images[b].cpu()
-                    img_vis = draw_single_detection(img_t, box, pred_name, score)
-
-                    out_name = (
-                        f"{ckpt_path.stem}_img{image_ids[b]}_pred_{pred_name.replace(' ', '_')}.jpg"
-                    )
-                    img_vis.save(vis_dir / out_name)
-                    vis_count += 1
-
-    acc = correct / total if total > 0 else 0.0
-    logger.info(
-        f"Checkpoint {ckpt_path.name}: accuracy={acc:.4f} "
-        f"({correct}/{total} images with correct top-1 category)"
-    )
-    return acc
+            ax.add_patch(rect)
+            
+            # Add label
+            label_text = f"{category_names[label]}: {score:.2f}"
+            ax.text(
+                x1, y1 - 5,
+                label_text,
+                bbox=dict(facecolor=colors[label], alpha=0.5),
+                fontsize=10,
+                color='white'
+            )
+        
+        ax.axis('off')
+        plt.tight_layout()
+        
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, bbox_inches='tight', dpi=150)
+            self.logger.info(f"Visualization saved to: {save_path}")
+        
+        plt.show()
+    
+    def evaluate_images(
+        self,
+        image_paths: list,
+        category_names: list,
+        output_dir: str = 'outputs/zero_shot'
+    ):
+        """Evaluate on multiple images"""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        self.logger.info(f"Evaluating {len(image_paths)} images")
+        self.logger.info(f"Custom vocabulary: {category_names}")
+        
+        for img_path in tqdm(image_paths, desc="Evaluating"):
+            # Predict
+            predictions, original_size = self.predict(
+                img_path,
+                category_names=category_names,
+                conf_threshold=0.25
+            )
+            
+            # Save visualization
+            img_name = Path(img_path).stem
+            save_path = os.path.join(output_dir, f"{img_name}_pred.jpg")
+            
+            self.visualize_predictions(
+                img_path,
+                predictions,
+                category_names,
+                save_path=save_path
+            )
+            
+            # Log results
+            num_detections = len(predictions['boxes'])
+            self.logger.info(
+                f"{img_name}: {num_detections} detections | "
+                f"Categories: {[category_names[l] for l in predictions['labels'].cpu().numpy()]}"
+            )
 
 
 def main():
-    cfg = Config()
-    logger = get_logger()
-
-    device = torch.device(
-        cfg.train.device
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
+    parser = argparse.ArgumentParser(description='Zero-Shot Evaluation for YOLO-World')
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
+                        help='Path to config file')
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help='Path to model checkpoint')
+    parser.add_argument('--image', type=str, default=None,
+                        help='Path to single image')
+    parser.add_argument('--image_dir', type=str, default=None,
+                        help='Path to directory of images')
+    parser.add_argument('--categories', type=str, nargs='+', required=True,
+                        help='Custom category names to detect')
+    parser.add_argument('--output_dir', type=str, default='outputs/zero_shot',
+                        help='Output directory for visualizations')
+    parser.add_argument('--conf_threshold', type=float, default=0.25,
+                        help='Confidence threshold')
+    parser.add_argument('--device', type=str, default='auto',
+                        help='Device to use: auto, cuda, mps, or cpu')
+    
+    args = parser.parse_args()
+    
+    # Load config
+    config = load_config(args.config)
+    
+    # Create evaluator
+    evaluator = ZeroShotEvaluator(config, args.checkpoint, args.device)
+    
+    # Get image paths
+    image_paths = []
+    if args.image:
+        image_paths = [args.image]
+    elif args.image_dir:
+        image_dir = Path(args.image_dir)
+        image_paths = list(image_dir.glob('*.jpg')) + list(image_dir.glob('*.png'))
+    else:
+        raise ValueError("Must provide either --image or --image_dir")
+    
+    # Evaluate
+    evaluator.evaluate_images(
+        image_paths,
+        category_names=args.categories,
+        output_dir=args.output_dir
     )
-    logger.info(f"Using device: {device}")
-
-    # Use COCO val2017 split (not the mini subset)
-    coco_root = cfg.data.coco_root
-    val_images = coco_root / "val2017"
-    val_annot = coco_root / "annotations" / "instances_val2017.json"
-
-    if not val_images.exists():
-        raise FileNotFoundError(f"COCO val images not found at: {val_images}")
-    if not val_annot.exists():
-        raise FileNotFoundError(f"COCO val annotations not found at: {val_annot}")
-
-    # Build dataset on full COCO val
-    full_val_dataset = COCOMiniDataset(
-        images_dir=val_images,
-        ann_file=val_annot,
-    )
-
-    # Randomly sample up to 1000 images
-    num_samples = min(1000, len(full_val_dataset))
-    indices = random.sample(range(len(full_val_dataset)), k=num_samples)
-    subset = Subset(full_val_dataset, indices)
-    logger.info(f"Evaluating on {num_samples} randomly sampled COCO val images.")
-
-    # Find all checkpoints in output_dir
-    ckpt_dir = cfg.train.output_dir
-    ckpt_paths = sorted(ckpt_dir.glob("yoloworld_mini_epoch*.pt"))
-
-    if not ckpt_paths:
-        logger.error(f"No checkpoints found in {ckpt_dir}")
-        return
-
-    best_acc = -1.0
-    best_ckpt = None
-
-    for ckpt_path in ckpt_paths:
-        acc = evaluate_checkpoint(cfg, ckpt_path, subset, device, logger)
-        if acc > best_acc:
-            best_acc = acc
-            best_ckpt = ckpt_path
-
-    logger.info(
-        f"Best checkpoint: {best_ckpt.name if best_ckpt is not None else 'None'} "
-        f"with accuracy={best_acc:.4f}"
-    )
-    logger.info(
-        f"Visualizations saved to: {cfg.train.output_dir / 'vis'}"
-    )
+    
+    print(f"\nEvaluation complete! Results saved to: {args.output_dir}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
