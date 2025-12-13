@@ -172,7 +172,7 @@ def box_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.
     while sorted_indices.numel() > 0:
         # Keep highest scoring box
         idx = sorted_indices[0]
-        keep.append(idx)
+        keep.append(idx.item())  # <- Convert to Python int
         
         if sorted_indices.numel() == 1:
             break
@@ -180,7 +180,7 @@ def box_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.
         # Compute IoU with remaining boxes
         ious = compute_iou(boxes[idx:idx+1], boxes[sorted_indices[1:]])[0]
         
-        # Remove boxes with high IoU
+        # Remove boxes with high IoU (keep boxes with LOW overlap)
         mask = ious <= iou_threshold
         sorted_indices = sorted_indices[1:][mask]
     
