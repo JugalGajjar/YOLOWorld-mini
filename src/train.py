@@ -55,7 +55,7 @@ class Trainer:
         
         # Update num_workers based on device
         if self.device.type == 'mps':
-            config['data']['num_workers'] = 2  # MPS works better with fewer workers
+            config['data']['num_workers'] = 2 # MPS works better with fewer workers
         
         # Set seed
         set_seed(42)
@@ -63,6 +63,13 @@ class Trainer:
         # Build datasets
         self.train_dataset = self.build_dataset('train')
         self.val_dataset = self.build_dataset('val')
+        
+        # Worker init function to fix OpenCV multiprocessing issues
+        def worker_init_fn(worker_id):
+            """Initialize worker process for OpenCV compatibility"""
+            import cv2
+            # Disable OpenCV threading to avoid conflicts in multiprocessing
+            cv2.setNumThreads(0)
         
         # Build dataloaders
         pin_memory = device_settings.get('pin_memory', False)
@@ -74,7 +81,9 @@ class Trainer:
             num_workers=config['data']['num_workers'],
             collate_fn=collate_fn,
             pin_memory=pin_memory,
-            drop_last=True
+            drop_last=True,
+            worker_init_fn=worker_init_fn,
+            persistent_workers=True if config['data']['num_workers'] > 0 else False
         )
         
         self.val_loader = DataLoader(
@@ -83,7 +92,9 @@ class Trainer:
             shuffle=False,
             num_workers=config['data']['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=pin_memory
+            pin_memory=pin_memory,
+            worker_init_fn=worker_init_fn,
+            persistent_workers=True if config['data']['num_workers'] > 0 else False
         )
         
         # Build model
@@ -114,7 +125,7 @@ class Trainer:
             num_classes=config['data']['num_classes'],
             box_loss_weight=config['train']['box_loss_weight'],
             cls_loss_weight=config['train']['cls_loss_weight'],
-            obj_loss_weight=1.0,  # Objectness loss weight
+            obj_loss_weight=1.0, # Objectness loss weight
             contrastive_loss_weight=config['train']['contrastive_loss_weight'],
             img_size=config['data']['img_size'],
             reg_max=16
@@ -193,6 +204,14 @@ class Trainer:
                 negative_samples=self.config['train']['negative_samples_per_batch']
             )
             
+            # Create label mapping: label_idx -> vocab_idx
+            # all_category_names[label_idx] gives the category name
+            label_to_vocab = torch.full((self.config['data']['num_classes'],), -1, dtype=torch.long, device=self.device)
+            for label_idx in range(self.config['data']['num_classes']):
+                cat_name = self.train_dataset.all_category_names[label_idx]
+                if cat_name in vocab_mapping:
+                    label_to_vocab[label_idx] = vocab_mapping[cat_name]
+            
             # Forward pass
             outputs = self.model(images, category_names=vocabulary)
             
@@ -201,6 +220,7 @@ class Trainer:
                 'boxes': boxes,
                 'labels': labels,
                 'num_boxes': num_boxes,
+                'label_to_vocab': label_to_vocab, # Add label mapping
             }
             
             loss, loss_dict = self.criterion(outputs, targets)
@@ -261,6 +281,13 @@ class Trainer:
                 max_vocab_size=self.config['train']['vocab_size_per_batch']
             )
             
+            # Create label mapping
+            label_to_vocab = torch.full((self.config['data']['num_classes'],), -1, dtype=torch.long, device=self.device)
+            for label_idx in range(self.config['data']['num_classes']):
+                cat_name = self.val_dataset.all_category_names[label_idx]
+                if cat_name in vocab_mapping:
+                    label_to_vocab[label_idx] = vocab_mapping[cat_name]
+            
             # Forward pass
             outputs = self.model(images, category_names=vocabulary)
             
@@ -269,6 +296,7 @@ class Trainer:
                 'boxes': boxes,
                 'labels': labels,
                 'num_boxes': num_boxes,
+                'label_to_vocab': label_to_vocab,
             }
             
             loss, loss_dict = self.criterion(outputs, targets)
