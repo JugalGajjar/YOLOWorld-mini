@@ -301,9 +301,9 @@ class YOLOWorld(nn.Module):
         return predictions
     
     def post_process(self, outputs: Dict, conf_threshold: float, iou_threshold: float, max_det: int,
-                     category_names: List[str]) -> List[Dict]:
+                 category_names: List[str]) -> List[Dict]:
         """
-        Post-process predictions with NMS
+        Post-process predictions with NMS (per-class)
         """
         from modules.losses import decode_boxes, generate_anchors
         from utils.utils import box_nms
@@ -325,39 +325,39 @@ class YOLOWorld(nn.Module):
             all_labels = []
             
             for scale_idx in range(len(cls_logits)):
-                cls_logit = cls_logits[scale_idx][b] # (N_vocab, H, W)
-                box_pred = box_preds[scale_idx][b:b+1] # (1, 4*(reg_max+1), H, W)
-                obj_pred = obj_preds[scale_idx][b] # (1, H, W)
+                cls_logit = cls_logits[scale_idx][b]
+                box_pred = box_preds[scale_idx][b:b+1]
+                obj_pred = obj_preds[scale_idx][b]
                 
                 N_vocab, H, W = cls_logit.shape
                 stride = strides[scale_idx]
                 
                 # Generate anchors
-                anchors = generate_anchors((H, W), stride, device) # (H*W, 2)
+                anchors = generate_anchors((H, W), stride, device)
                 
                 # Decode boxes
                 decoded_boxes = decode_boxes(
                     box_pred, anchors, stride, self.reg_max
-                )  # (1, H*W, 4)
-                decoded_boxes = decoded_boxes.squeeze(0) # (H*W, 4)
+                )
+                decoded_boxes = decoded_boxes.squeeze(0)
                 
                 # Normalize boxes to [0, 1]
-                img_size = 640 # Default image size
+                img_size = 640
                 decoded_boxes = decoded_boxes / img_size
                 decoded_boxes = decoded_boxes.clamp(0, 1)
                 
                 # Reshape decoded boxes to (H, W, 4)
                 decoded_boxes = decoded_boxes.reshape(H, W, 4)
                 
-                # Apply sigmoid to get probabilities
-                obj_scores = torch.sigmoid(obj_pred).squeeze(0) # (H, W)
-                cls_scores = torch.sigmoid(cls_logit) # (N_vocab, H, W)
+                # Apply sigmoid
+                obj_scores = torch.sigmoid(obj_pred).squeeze(0)
+                cls_scores = torch.sigmoid(cls_logit)
                 
                 # Combine objectness and class scores
-                scores = obj_scores.unsqueeze(0) * cls_scores # (N_vocab, H, W)
+                scores = obj_scores.unsqueeze(0) * cls_scores
                 
                 # Get max class and score for each location
-                max_scores, max_labels = scores.max(dim=0) # (H, W)
+                max_scores, max_labels = scores.max(dim=0)
                 
                 # Filter by confidence
                 mask = max_scores > conf_threshold
@@ -366,9 +366,9 @@ class YOLOWorld(nn.Module):
                     continue
                 
                 # Get filtered predictions
-                filtered_boxes = decoded_boxes[mask] # (N_filtered, 4)
-                filtered_scores = max_scores[mask] # (N_filtered,)
-                filtered_labels = max_labels[mask] # (N_filtered,)
+                filtered_boxes = decoded_boxes[mask]
+                filtered_scores = max_scores[mask]
+                filtered_labels = max_labels[mask]
                 
                 all_boxes.append(filtered_boxes)
                 all_scores.append(filtered_scores)
@@ -376,40 +376,58 @@ class YOLOWorld(nn.Module):
             
             # Combine all scales
             if len(all_boxes) > 0:
-                all_boxes = torch.cat(all_boxes, dim=0) # (N_total, 4)
-                all_scores = torch.cat(all_scores, dim=0) # (N_total,)
-                all_labels = torch.cat(all_labels, dim=0) # (N_total,)
+                all_boxes = torch.cat(all_boxes, dim=0)
+                all_scores = torch.cat(all_scores, dim=0)
+                all_labels = torch.cat(all_labels, dim=0)
                 
-                # Apply NMS
-                keep_indices = box_nms(all_boxes, all_scores, iou_threshold)
+                # ⭐ CRITICAL FIX: Apply NMS PER CLASS ⭐
+                keep_indices = []
+                unique_labels = torch.unique(all_labels)
                 
-                # Limit to max_det
-                if len(keep_indices) > max_det:
-                    # Sort by score and keep top max_det
-                    scores_sorted, sort_indices = all_scores[keep_indices].sort(descending=True)
-                    keep_indices = keep_indices[sort_indices[:max_det]]
+                for label in unique_labels:
+                    # Get boxes for this class
+                    class_mask = all_labels == label
+                    class_boxes = all_boxes[class_mask]
+                    class_scores = all_scores[class_mask]
+                    class_indices = torch.where(class_mask)[0]
+                    
+                    # Apply NMS for this class
+                    keep = box_nms(class_boxes, class_scores, iou_threshold)
+                    
+                    # Map back to original indices
+                    keep_indices.append(class_indices[keep])
                 
-                # Get final predictions
-                final_boxes = all_boxes[keep_indices]
-                final_scores = all_scores[keep_indices]
-                final_labels = all_labels[keep_indices]
-                
-                # Convert label indices to category names
-                final_category_names = [category_names[int(label)] for label in final_labels]
-                
-                predictions.append({
-                    'boxes': final_boxes.cpu(),
-                    'scores': final_scores.cpu(),
-                    'labels': final_labels.cpu(),
-                    'category_names': final_category_names
-                })
+                # Combine all kept indices
+                if len(keep_indices) > 0:
+                    keep_indices = torch.cat(keep_indices)
+                    
+                    # Limit to max_det
+                    if len(keep_indices) > max_det:
+                        scores_sorted, sort_indices = all_scores[keep_indices].sort(descending=True)
+                        keep_indices = keep_indices[sort_indices[:max_det]]
+                    
+                    # Get final predictions
+                    final_boxes = all_boxes[keep_indices]
+                    final_scores = all_scores[keep_indices]
+                    final_labels = all_labels[keep_indices]
+                    
+                    predictions.append({
+                        'boxes': final_boxes,
+                        'scores': final_scores,
+                        'labels': final_labels
+                    })
+                else:
+                    predictions.append({
+                        'boxes': torch.zeros((0, 4), device=device),
+                        'scores': torch.zeros((0,), device=device),
+                        'labels': torch.zeros((0,), dtype=torch.long, device=device)
+                    })
             else:
                 # No detections
                 predictions.append({
-                    'boxes': torch.zeros((0, 4)),
-                    'scores': torch.zeros((0,)),
-                    'labels': torch.zeros((0,), dtype=torch.long),
-                    'category_names': []
+                    'boxes': torch.zeros((0, 4), device=device),
+                    'scores': torch.zeros((0,), device=device),
+                    'labels': torch.zeros((0,), dtype=torch.long, device=device)
                 })
         
         return predictions
