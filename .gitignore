@@ -13,3 +13,4 @@ coco/
 models/
 logs/
 outputs/
+test_images_videos/
