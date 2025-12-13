@@ -87,7 +87,7 @@ zero_shot:
 logging:
   log_dir: "logs"
   save_dir: "outputs"
-  save_period: 5 # Save checkpoint every N epochs
+  save_period: 1 # Save checkpoint every N epochs
   log_interval: 100 # Log every N iterations
   use_wandb: false
   wandb_project: "yolo-world-mini"
