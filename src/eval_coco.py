@@ -1,6 +1,6 @@
 """
-COCO Evaluation Script for YOLO-World - FIXED
-Proper box denormalization for accurate metrics
+COCO Evaluation Script for YOLO-World
+Proper box denormalization + Category ID mapping
 """
 
 import os
@@ -24,6 +24,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.yolo_world import build_yolo_world
 from utils.utils import load_config, setup_logger
 from utils.device import get_available_device
+
+
+# COCO category IDs (80 classes, but IDs are not sequential)
+COCO_CATEGORY_IDS = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+    22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+    43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+    62, 63, 64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84,
+    85, 86, 87, 88, 89, 90
+]
+
+
+def get_coco_category_id(label_index: int) -> int:
+    """Convert model label index (0-79) to COCO category ID"""
+    if 0 <= label_index < len(COCO_CATEGORY_IDS):
+        return COCO_CATEGORY_IDS[label_index]
+    return label_index + 1  # Fallback
 
 
 class COCOEvaluator:
@@ -55,6 +72,7 @@ class COCOEvaluator:
             raise
         
         # Load checkpoint
+        self.checkpoint_name = checkpoint_path.split('/')[-1].split('.')[0]
         self.load_checkpoint(checkpoint_path)
         self.model.eval()
         
@@ -75,11 +93,11 @@ class COCOEvaluator:
             if 'model_state_dict' in checkpoint:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 if 'epoch' in checkpoint:
-                    self.logger.info(f"✅ Loaded from epoch {checkpoint['epoch']}")
+                    self.logger.info(f"Loaded from epoch {checkpoint['epoch']}")
             else:
                 self.model.load_state_dict(checkpoint)
             
-            self.logger.info("✅ Checkpoint loaded successfully")
+            self.logger.info("Checkpoint loaded successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to load checkpoint: {e}")
@@ -136,7 +154,6 @@ class COCOEvaluator:
         
         pred = predictions[0]
         
-        # CRITICAL FIX: Properly denormalize boxes
         if len(pred['boxes']) > 0:
             max_val = pred['boxes'].max().item()
             
@@ -163,6 +180,64 @@ class COCOEvaluator:
         self.total_images += 1
         
         return pred, inference_time
+    
+    def compute_per_category_metrics(self, coco_eval: COCOeval, coco_gt: COCO) -> Dict:
+        """
+        Compute per-category AP metrics
+        
+        Returns:
+            Dict mapping category names to their metrics
+        """
+        # Get precision array
+        precision = coco_eval.eval['precision']
+        
+        # Category IDs in COCO evaluation
+        cat_ids = coco_eval.params.catIds
+        
+        per_category_metrics = {}
+        
+        for idx, cat_id in enumerate(cat_ids):
+            # Get category info - CHECK IF EXISTS
+            cat_list = coco_gt.loadCats(cat_id)
+            if not cat_list:
+                # Category doesn't exist, skip
+                continue
+            
+            cat_name = cat_list[0]['name']
+            
+            # AP@0.5
+            ap_50 = precision[0, :, idx, 0, 2].mean()
+            
+            # AP@0.5:0.95
+            ap_50_95 = precision[:, :, idx, 0, 2].mean()
+            
+            # AP@0.75
+            ap_75 = precision[5, :, idx, 0, 2].mean()
+            
+            # AP by size
+            ap_small = precision[:, :, idx, 0, 2].mean()
+            ap_medium = precision[:, :, idx, 1, 2].mean()
+            ap_large = precision[:, :, idx, 2, 2].mean()
+            
+            # Handle NaN
+            ap_50 = float(ap_50) if not np.isnan(ap_50) else 0.0
+            ap_50_95 = float(ap_50_95) if not np.isnan(ap_50_95) else 0.0
+            ap_75 = float(ap_75) if not np.isnan(ap_75) else 0.0
+            ap_small = float(ap_small) if not np.isnan(ap_small) else 0.0
+            ap_medium = float(ap_medium) if not np.isnan(ap_medium) else 0.0
+            ap_large = float(ap_large) if not np.isnan(ap_large) else 0.0
+            
+            per_category_metrics[cat_name] = {
+                'category_id': int(cat_id),
+                'mAP_0.5': ap_50,
+                'mAP_0.5:0.95': ap_50_95,
+                'mAP_0.75': ap_75,
+                'mAP_small': ap_small,
+                'mAP_medium': ap_medium,
+                'mAP_large': ap_large
+            }
+        
+        return per_category_metrics
     
     def evaluate_coco(
         self,
@@ -219,8 +294,8 @@ class COCOEvaluator:
                         continue
                     
                     coco_results.append({
-                        'image_id': img_id,
-                        'category_id': label + 1,  # COCO categories are 1-indexed
+                        'image_id': int(img_id),
+                        'category_id': get_coco_category_id(int(label)),
                         'bbox': [float(x1), float(y1), float(w), float(h)],
                         'score': float(score)
                     })
@@ -256,6 +331,37 @@ class COCOEvaluator:
         coco_eval.accumulate()
         coco_eval.summarize()
         
+        # Compute per-category metrics
+        self.logger.info("\n" + "="*60)
+        self.logger.info("Computing per-category metrics...")
+        self.logger.info("="*60)
+        
+        per_category_metrics = self.compute_per_category_metrics(coco_eval, coco_gt)
+        
+        # Print per-category summary
+        sorted_categories = sorted(
+            per_category_metrics.items(),
+            key=lambda x: x[1]['mAP_0.5'],
+            reverse=True
+        )
+        
+        print(f"\n{'='*80}")
+        print(f"  Top 10 Categories by mAP@0.5")
+        print(f"{'='*80}")
+        print(f"{'Category':<20} {'mAP@0.5':<12} {'mAP@0.5:0.95':<15} {'mAP@0.75':<12}")
+        print(f"{'-'*80}")
+        for cat_name, metrics in sorted_categories[:10]:
+            print(f"{cat_name:<20} {metrics['mAP_0.5']:<12.3f} {metrics['mAP_0.5:0.95']:<15.3f} {metrics['mAP_0.75']:<12.3f}")
+        
+        print(f"\n{'='*80}")
+        print(f"  Bottom 10 Categories by mAP@0.5")
+        print(f"{'='*80}")
+        print(f"{'Category':<20} {'mAP@0.5':<12} {'mAP@0.5:0.95':<15} {'mAP@0.75':<12}")
+        print(f"{'-'*80}")
+        for cat_name, metrics in sorted_categories[-10:]:
+            print(f"{cat_name:<20} {metrics['mAP_0.5']:<12.3f} {metrics['mAP_0.5:0.95']:<15.3f} {metrics['mAP_0.75']:<12.3f}")
+        print()
+        
         # Print summary
         avg_time = self.total_inference_time / self.total_images if self.total_images > 0 else 0
         fps = 1.0 / avg_time if avg_time > 0 else 0
@@ -271,27 +377,42 @@ class COCOEvaluator:
         
         # Save metrics
         metrics = {
-            'mAP_0.5:0.95': float(coco_eval.stats[0]),
-            'mAP_0.5': float(coco_eval.stats[1]),
-            'mAP_0.75': float(coco_eval.stats[2]),
-            'mAP_small': float(coco_eval.stats[3]),
-            'mAP_medium': float(coco_eval.stats[4]),
-            'mAP_large': float(coco_eval.stats[5]),
-            'AR_1': float(coco_eval.stats[6]),
-            'AR_10': float(coco_eval.stats[7]),
-            'AR_100': float(coco_eval.stats[8]),
-            'AR_small': float(coco_eval.stats[9]),
-            'AR_medium': float(coco_eval.stats[10]),
-            'AR_large': float(coco_eval.stats[11]),
-            'inference_time': avg_time,
-            'fps': fps
+            'overall': {
+                'mAP_0.5:0.95': float(coco_eval.stats[0]),
+                'mAP_0.5': float(coco_eval.stats[1]),
+                'mAP_0.75': float(coco_eval.stats[2]),
+                'mAP_small': float(coco_eval.stats[3]),
+                'mAP_medium': float(coco_eval.stats[4]),
+                'mAP_large': float(coco_eval.stats[5]),
+                'AR_1': float(coco_eval.stats[6]),
+                'AR_10': float(coco_eval.stats[7]),
+                'AR_100': float(coco_eval.stats[8]),
+                'AR_small': float(coco_eval.stats[9]),
+                'AR_medium': float(coco_eval.stats[10]),
+                'AR_large': float(coco_eval.stats[11]),
+                'inference_time': avg_time,
+                'fps': fps
+            },
+            'per_category': per_category_metrics
         }
         
-        metrics_file = os.path.join(output_dir, 'metrics.json')
+        # Save metrics
+        metrics_file = os.path.join(output_dir, f'metrics_{self.checkpoint_name}.json')
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
         
-        self.logger.info(f"✅ Metrics saved to {metrics_file}")
+        self.logger.info(f"Metrics saved to {metrics_file}")
+        
+        # Save CSV
+        csv_file = os.path.join(output_dir, f'per_category_{self.checkpoint_name}.csv')
+        with open(csv_file, 'w') as f:
+            f.write("Category,Category_ID,mAP@0.5,mAP@0.5:0.95,mAP@0.75,mAP_small,mAP_medium,mAP_large\n")
+            for cat_name in sorted(per_category_metrics.keys()):
+                m = per_category_metrics[cat_name]
+                f.write(f"{cat_name},{m['category_id']},{m['mAP_0.5']:.4f},{m['mAP_0.5:0.95']:.4f},"
+                       f"{m['mAP_0.75']:.4f},{m['mAP_small']:.4f},{m['mAP_medium']:.4f},{m['mAP_large']:.4f}\n")
+        
+        self.logger.info(f"Per-category CSV saved to {csv_file}")
 
 
 def main():
@@ -301,8 +422,8 @@ def main():
     parser.add_argument('--ann_file', type=str, required=True)
     parser.add_argument('--img_dir', type=str, required=True)
     parser.add_argument('--categories_file', type=str, default=None)
-    parser.add_argument('--conf_threshold', type=float, default=0.001)
-    parser.add_argument('--iou_threshold', type=float, default=0.7)
+    parser.add_argument('--conf_threshold', type=float, default=0.01)
+    parser.add_argument('--iou_threshold', type=float, default=0.5)
     parser.add_argument('--output_dir', type=str, default='outputs/coco_eval')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'mps', 'cpu'])
     
@@ -329,7 +450,7 @@ def main():
             'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
         ]
     
-    print(f"\n📊 COCO Evaluation")
+    print(f"\nCOCO Evaluation")
     print(f"Categories: {len(category_names)}")
     print(f"Annotation file: {args.ann_file}")
     print(f"Images directory: {args.img_dir}\n")
@@ -345,7 +466,7 @@ def main():
         output_dir=args.output_dir
     )
     
-    print(f"\n✅ Evaluation complete! Results in: {args.output_dir}\n")
+    print(f"\nEvaluation complete! Results in: {args.output_dir}\n")
 
 
 if __name__ == '__main__':
