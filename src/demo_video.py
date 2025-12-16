@@ -70,11 +70,11 @@ class VideoDemo:
             if 'model_state_dict' in checkpoint:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 if 'epoch' in checkpoint:
-                    self.logger.info(f"✅ Loaded from epoch {checkpoint['epoch']}")
+                    self.logger.info(f"Loaded from epoch {checkpoint['epoch']}")
             else:
                 self.model.load_state_dict(checkpoint)
             
-            self.logger.info("✅ Checkpoint loaded successfully")
+            self.logger.info("Checkpoint loaded successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to load checkpoint: {e}")
@@ -370,7 +370,7 @@ def main():
         display=not args.no_display
     )
     
-    print("✅ Video processing complete!")
+    print("Video processing complete!")
 
 
 if __name__ == '__main__':
