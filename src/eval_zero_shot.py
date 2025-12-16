@@ -75,11 +75,11 @@ class ZeroShotEvaluator:
             if 'model_state_dict' in checkpoint:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 if 'epoch' in checkpoint:
-                    self.logger.info(f"✅ Loaded from epoch {checkpoint['epoch']}")
+                    self.logger.info(f"Loaded from epoch {checkpoint['epoch']}")
             else:
                 self.model.load_state_dict(checkpoint)
             
-            self.logger.info("✅ Checkpoint loaded successfully")
+            self.logger.info("Checkpoint loaded successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to load checkpoint: {e}")
@@ -350,7 +350,7 @@ def main():
         iou_threshold=args.iou_threshold
     )
     
-    print("✅ Evaluation complete!")
+    print("Evaluation complete!")
 
 
 if __name__ == '__main__':
