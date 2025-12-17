@@ -128,6 +128,8 @@ Text Prompts → CLIP Encoder → Text Embeddings (512-dim)
 
 **Note:** Trained on 50K balanced subset vs. paper's 1.7M images (34× less data) and 16 vs. 80 epochs.
 
+![Collage of some predictions](./assets/cv-blog-collage.png)
+
 ## Project Structure
 
 ```
