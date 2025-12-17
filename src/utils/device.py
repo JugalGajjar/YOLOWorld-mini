@@ -19,7 +19,6 @@ def get_available_device(preferred: str = 'auto') -> Tuple[torch.device, str]:
         device: torch.device object
         device_name: String description of device
     """
-    
     if preferred == 'auto':
         # Auto-detect best available device
         if torch.cuda.is_available():
