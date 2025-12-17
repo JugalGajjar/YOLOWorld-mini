@@ -20,14 +20,8 @@ class COCODetectionDataset(Dataset):
     COCO Dataset for YOLO-World training with text prompts
     """
     
-    def __init__(
-        self,
-        img_dir: str,
-        ann_file: str,
-        img_size: int = 640,
-        augment: bool = True,
-        cache_images: bool = False,
-    ):
+    def __init__(self, img_dir: str, ann_file: str, img_size: int = 640, augment: bool = True,
+                 cache_images: bool = False):
         self.img_dir = Path(img_dir)
         self.img_size = img_size
         self.augment = augment
@@ -75,10 +69,9 @@ class COCODetectionDataset(Dataset):
             if self.cache_images and img_id in self.imgs_cache:
                 img = self.imgs_cache[img_id].copy()
             else:
-                # Use PIL instead of OpenCV for better multiprocessing support
                 try:
                     pil_img = Image.open(str(img_path)).convert('RGB')
-                    img = np.array(pil_img)  # Convert to numpy array (H, W, 3)
+                    img = np.array(pil_img) # Convert to numpy array (H, W, 3)
                 except Exception as e:
                     print(f"Warning: Could not load image {img_path}: {e}. Skipping to next image.")
                     # Recursively try the next image
@@ -103,7 +96,7 @@ class COCODetectionDataset(Dataset):
                 if ann.get('iscrowd', 0):
                     continue
                     
-                bbox = ann['bbox']  # [x, y, w, h]
+                bbox = ann['bbox'] # [x, y, w, h]
                 cat_id = ann['category_id']
                 
                 # Convert to xyxy format
@@ -173,8 +166,7 @@ class COCODetectionDataset(Dataset):
         top, left = dh // 2, dw // 2
         bottom, right = dh - top, dw - left
         
-        img = cv2.copyMakeBorder(img, top, bottom, left, right, 
-                                 cv2.BORDER_CONSTANT, value=(114, 114, 114))
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
         
         # Adjust boxes (currently in normalized [0,1], need to adjust for padding)
         if len(boxes) > 0:
@@ -194,8 +186,8 @@ class COCODetectionDataset(Dataset):
         
         return img, boxes
     
-    def augment_hsv(self, img: np.ndarray, boxes: np.ndarray, labels: np.ndarray, 
-                    hgain=0.015, sgain=0.7, vgain=0.4) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def augment_hsv(self, img: np.ndarray, boxes: np.ndarray, labels: np.ndarray, hgain=0.015,
+                    sgain=0.7, vgain=0.4) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Apply HSV augmentation"""
         if not self.augment:
             return img, boxes, labels
@@ -243,7 +235,6 @@ def collate_fn(batch: List[Dict]) -> Dict:
     images = torch.stack([item['image'] for item in batch])
     
     # For boxes and labels, we need to handle variable sizes
-    # We'll keep them as lists for now, or pad them
     max_boxes = max([len(item['boxes']) for item in batch])
     
     batch_boxes = []
@@ -259,7 +250,7 @@ def collate_fn(batch: List[Dict]) -> Dict:
         if num_boxes < max_boxes:
             # Pad with zeros
             pad_boxes = torch.zeros((max_boxes - num_boxes, 4), dtype=boxes.dtype)
-            pad_labels = torch.zeros((max_boxes - num_boxes,), dtype=labels.dtype) - 1  # -1 for padding
+            pad_labels = torch.zeros((max_boxes - num_boxes,), dtype=labels.dtype) - 1 # -1 for padding
             
             boxes = torch.cat([boxes, pad_boxes], dim=0)
             labels = torch.cat([labels, pad_labels], dim=0)
@@ -286,12 +277,8 @@ def collate_fn(batch: List[Dict]) -> Dict:
     }
 
 
-def create_online_vocabulary(
-    batch_categories: List[str],
-    all_categories: List[str],
-    max_vocab_size: int = 100,
-    negative_samples: int = 50,
-) -> Tuple[List[str], Dict[str, int]]:
+def create_online_vocabulary(batch_categories: List[str], all_categories: List[str], max_vocab_size: int = 100,
+                             negative_samples: int = 50) -> Tuple[List[str], Dict[str, int]]:
     """
     Create online vocabulary for a batch
     
