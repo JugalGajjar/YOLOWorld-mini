@@ -7,12 +7,8 @@ from pathlib import Path
 from collections import defaultdict
 import random
 
-def make_coco_mini_balanced(
-    ann_path: Path,
-    out_path: Path,
-    images_per_class: int = 250,
-    random_seed: int = 42,
-):
+def make_coco_mini_balanced(ann_path: Path, out_path: Path, images_per_class: int = 250,
+                            random_seed: int = 42,):
     """
     Create a mini COCO dataset with balanced classes.
     
@@ -36,7 +32,7 @@ def make_coco_mini_balanced(
     
     # Group annotations by image_id and category_id
     image_annotations = defaultdict(lambda: defaultdict(list))
-    image_categories = defaultdict(set)  # image_id -> set of category_ids
+    image_categories = defaultdict(set) # image_id -> set of category_ids
     
     for ann in annotations:
         img_id = ann["image_id"]
@@ -45,7 +41,7 @@ def make_coco_mini_balanced(
         image_categories[img_id].add(cat_id)
     
     # Count images per category
-    category_image_counts = defaultdict(set)  # category_id -> set of image_ids
+    category_image_counts = defaultdict(set) # category_id -> set of image_ids
     
     for img_id, cats in image_categories.items():
         for cat_id in cats:
@@ -137,11 +133,11 @@ if __name__ == "__main__":
     root = Path("data/coco/annotations")
     ann_path = root / "instances_train2017.json"
     out_path = root / "instances_train2017_mini.json"
-    
-    # 400 images per class × 80 classes = 32,000 images
+
+    # 800 images per class × 80 classes = 64,000 images
     make_coco_mini_balanced(
         ann_path=ann_path,
         out_path=out_path,
-        images_per_class=400,
+        images_per_class=800,
         random_seed=42
     )
