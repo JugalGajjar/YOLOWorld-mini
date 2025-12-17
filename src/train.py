@@ -31,7 +31,6 @@ from utils.device import setup_device_for_training, print_device_info
 
 class Trainer:
     """Trainer class for YOLO-World"""
-    
     def __init__(self, config: dict, args):
         self.config = config
         self.args = args
