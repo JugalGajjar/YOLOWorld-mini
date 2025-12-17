@@ -13,7 +13,6 @@ class TextGuidedConv(nn.Module):
     """
     Text-guided convolutional block that modulates features based on text embeddings
     """
-    
     def __init__(self, in_channels: int, out_channels: int, text_dim: int = 512, kernel_size: int = 3,
                  stride: int = 1, padding: int = 1):
         super().__init__()
@@ -70,7 +69,6 @@ class ImageTextAttention(nn.Module):
     """
     Cross-attention between image features and text features
     """
-    
     def __init__(self, img_channels: int, text_dim: int = 512, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
         
@@ -143,7 +141,6 @@ class RepVLBlock(nn.Module):
     """
     Single RepVL block with text conditioning
     """
-    
     def __init__(self, in_channels: int, out_channels: int, text_dim: int = 512, use_attention: bool = True,
                  num_heads: int = 8):
         super().__init__()
@@ -198,7 +195,6 @@ class RepVLPAN(nn.Module):
     RepVL-PAN: Text-aware Path Aggregation Network
     Modified PAN neck with text conditioning at multiple scales
     """
-    
     def __init__(self, in_channels: List[int] = [256, 512, 512], # From YOLOv8 backbone
                  text_dim: int = 512, use_attention: bool = True, num_heads: int = 8):
         super().__init__()
@@ -297,7 +293,6 @@ class SimpleRepVLPAN(nn.Module):
     Simplified RepVL-PAN for faster prototyping
     Only applies text conditioning without complex attention
     """
-    
     def __init__(self, in_channels: List[int] = [256, 512, 512], text_dim: int = 512):
         super().__init__()
         
