@@ -1,5 +1,5 @@
 """
-Video Demo Script for YOLO-World - FIXED
+Video Demo Script for YOLO-World
 Proper box denormalization and label display
 """
 
@@ -24,7 +24,6 @@ from utils.device import get_available_device
 
 class VideoDemo:
     """Real-time video demo for YOLO-World"""
-    
     def __init__(self, config: dict, checkpoint_path: str, device: str = 'auto'):
         self.config = config
         
@@ -92,19 +91,14 @@ class VideoDemo:
         
         # To tensor
         img_tensor = torch.from_numpy(rgb).float() / 255.0
-        img_tensor = img_tensor.permute(2, 0, 1)  # (3, H, W)
+        img_tensor = img_tensor.permute(2, 0, 1) # (3, H, W)
         
         return img_tensor.unsqueeze(0), (original_w, original_h)
     
     @torch.no_grad()
-    def predict_frame(
-        self,
-        frame: np.ndarray,
-        category_names: List[str],
-        conf_threshold: float = 0.25,
-        iou_threshold: float = 0.7
-    ):
-        """Predict objects in frame - FIXED denormalization"""
+    def predict_frame(self, frame: np.ndarray, category_names: List[str], conf_threshold: float = 0.25,
+                      iou_threshold: float = 0.7):
+        """Predict objects in frame"""
         # Preprocess
         img_tensor, (orig_w, orig_h) = self.preprocess_frame(
             frame,
@@ -120,14 +114,14 @@ class VideoDemo:
             category_names=category_names,
             conf_threshold=conf_threshold,
             iou_threshold=iou_threshold,
-            max_det=100  # Limit for real-time
+            max_det=100 # Limit for real-time
         )
         
         inference_time = time.time() - start_time
         
         pred = predictions[0]
         
-        # CRITICAL FIX: Properly denormalize boxes
+        # Properly denormalize boxes
         if len(pred['boxes']) > 0:
             max_val = pred['boxes'].max().item()
             
@@ -135,8 +129,8 @@ class VideoDemo:
             if max_val <= 1.5:
                 # Denormalize from [0,1] to model input size (640x640)
                 img_size = self.config['data']['img_size']
-                pred['boxes'][:, [0, 2]] *= img_size  # x coords
-                pred['boxes'][:, [1, 3]] *= img_size  # y coords
+                pred['boxes'][:, [0, 2]] *= img_size # x coords
+                pred['boxes'][:, [1, 3]] *= img_size # y coords
             
             # Scale from model input size to original frame size
             img_size = self.config['data']['img_size']
@@ -152,13 +146,8 @@ class VideoDemo:
         
         return pred, inference_time
     
-    def draw_detections(
-        self,
-        frame: np.ndarray,
-        predictions: dict,
-        category_names: List[str],
-        show_conf: bool = True
-    ):
+    def draw_detections(self, frame: np.ndarray, predictions: dict, category_names: List[str],
+                        show_conf: bool = True):
         """Draw detections on frame with labels ON TOP"""
         boxes = predictions['boxes'].cpu().numpy()
         scores = predictions['scores'].cpu().numpy()
@@ -196,51 +185,24 @@ class VideoDemo:
             (text_w, text_h), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
             
             # Position label ABOVE box
-            label_y1 = max(text_h + 10, y1 - 5)  # At least text_h+10 from top
+            label_y1 = max(text_h + 10, y1 - 5) # At least text_h+10 from top
             label_y2 = label_y1 - text_h - 6
             
             # Draw label background
-            cv2.rectangle(
-                frame,
-                (x1, label_y2),
-                (x1 + text_w + 8, label_y1),
-                color,
-                -1  # Filled
-            )
+            cv2.rectangle(frame, (x1, label_y2), (x1 + text_w + 8, label_y1), color, -1)
             
             # Draw white border around label
-            cv2.rectangle(
-                frame,
-                (x1, label_y2),
-                (x1 + text_w + 8, label_y1),
-                (255, 255, 255),
-                1  # Outline
-            )
+            cv2.rectangle(frame, (x1, label_y2), (x1 + text_w + 8, label_y1), (255, 255, 255), 1)
             
             # Draw text
-            cv2.putText(
-                frame,
-                label_text,
-                (x1 + 4, label_y1 - 4),
-                font,
-                font_scale,
-                (255, 255, 255),  # White text
-                thickness,
-                cv2.LINE_AA
-            )
+            cv2.putText(frame, label_text, (x1 + 4, label_y1 - 4), font, font_scale, (255, 255, 255),
+                        thickness, cv2.LINE_AA)
         
         return frame
     
-    def process_video(
-        self,
-        video_path: str,
-        category_names: List[str],
-        output_path: str = None,
-        conf_threshold: float = 0.25,
-        iou_threshold: float = 0.7,
-        show_fps: bool = True,
-        display: bool = True
-    ):
+    def process_video(self, video_path: str, category_names: List[str], output_path: str = None,
+                      conf_threshold: float = 0.25, iou_threshold: float = 0.7, show_fps: bool = True,
+                      display: bool = True):
         """Process video file or webcam"""
         # Open video
         if video_path == '0' or video_path == 0:
