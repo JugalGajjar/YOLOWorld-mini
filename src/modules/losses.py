@@ -25,11 +25,11 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
     
     # Intersection
-    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # (N, M, 2)
-    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # (N, M, 2)
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2]) # (N, M, 2)
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:]) # (N, M, 2)
     
-    wh = (rb - lt).clamp(min=0)  # (N, M, 2)
-    inter = wh[:, :, 0] * wh[:, :, 1]  # (N, M)
+    wh = (rb - lt).clamp(min=0) # (N, M, 2)
+    inter = wh[:, :, 0] * wh[:, :, 1] # (N, M)
     
     # Union
     union = area1[:, None] + area2 - inter
@@ -40,12 +40,8 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     return iou
 
 
-def decode_boxes(
-    box_preds: torch.Tensor,
-    anchors: torch.Tensor,
-    stride: int,
-    reg_max: int = 16
-) -> torch.Tensor:
+def decode_boxes(box_preds: torch.Tensor, anchors: torch.Tensor, stride: int,
+                 reg_max: int = 16) -> torch.Tensor:
     """
     Decode box predictions from DFL format to xyxy boxes
     
@@ -68,7 +64,7 @@ def decode_boxes(
         batch_mode = False
     
     # Split into ltrb predictions
-    box_preds = box_preds.reshape(*box_preds.shape[:-1], 4, reg_max+1)  # (..., 4, reg_max+1)
+    box_preds = box_preds.reshape(*box_preds.shape[:-1], 4, reg_max+1) # (..., 4, reg_max+1)
     
     # Apply softmax along the reg_max dimension to get distribution
     box_preds = F.softmax(box_preds, dim=-1)
@@ -78,8 +74,7 @@ def decode_boxes(
     proj = torch.arange(reg_max + 1, device=device, dtype=torch.float32)
     
     # Compute expected value: sum(prob * value)
-    # Use reshape instead of view for safety
-    box_preds = (box_preds * proj.reshape(1, 1, 1, -1)).sum(dim=-1)  # (..., 4)
+    box_preds = (box_preds * proj.reshape(1, 1, 1, -1)).sum(dim=-1) # (..., 4)
     
     # Scale by stride
     box_preds = box_preds * stride
@@ -92,11 +87,10 @@ def decode_boxes(
     # Decode: ltrb to xyxy
     # anchors: (B, H*W, 2) or (N, 2) with [x_center, y_center]
     # box_preds: (B, H*W, 4) or (N, 4) with [left, top, right, bottom]
-    
-    x1 = anchors[..., 0] - box_preds[..., 0]  # x_center - left
-    y1 = anchors[..., 1] - box_preds[..., 1]  # y_center - top
-    x2 = anchors[..., 0] + box_preds[..., 2]  # x_center + right
-    y2 = anchors[..., 1] + box_preds[..., 3]  # y_center + bottom
+    x1 = anchors[..., 0] - box_preds[..., 0] # x_center - left
+    y1 = anchors[..., 1] - box_preds[..., 1] # y_center - top
+    x2 = anchors[..., 0] + box_preds[..., 2] # x_center + right
+    y2 = anchors[..., 1] + box_preds[..., 3] # y_center + bottom
     
     boxes = torch.stack([x1, y1, x2, y2], dim=-1)
     
@@ -133,24 +127,13 @@ class TargetAssigner:
     Assigns ground truth targets to predictions using IoU matching
     """
     
-    def __init__(
-        self,
-        num_classes: int,
-        iou_threshold: float = 0.5,
-        center_radius: float = 2.5
-    ):
+    def __init__(self, num_classes: int, iou_threshold: float = 0.5, center_radius: float = 2.5):
         self.num_classes = num_classes
         self.iou_threshold = iou_threshold
         self.center_radius = center_radius
     
-    def assign_targets(
-        self,
-        anchors: torch.Tensor,
-        gt_boxes: torch.Tensor,
-        gt_labels: torch.Tensor,
-        num_boxes: int,
-        img_size: int = 640
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def assign_targets(self, anchors: torch.Tensor, gt_boxes: torch.Tensor, gt_labels: torch.Tensor, num_boxes: int,
+                       img_size: int = 640) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Assign ground truth to anchors
         
@@ -180,16 +163,16 @@ class TargetAssigner:
             return assigned_labels, assigned_boxes, positive_mask, matched_gt_idx
         
         # Get valid ground truth
-        gt_boxes_valid = gt_boxes[:num_boxes]  # (N_gt, 4)
-        gt_labels_valid = gt_labels[:num_boxes]  # (N_gt,)
+        gt_boxes_valid = gt_boxes[:num_boxes] # (N_gt, 4)
+        gt_labels_valid = gt_labels[:num_boxes] # (N_gt,)
         
         # Denormalize boxes to absolute coordinates
         gt_boxes_abs = gt_boxes_valid.clone()
         gt_boxes_abs[:, [0, 2]] *= img_size
         gt_boxes_abs[:, [1, 3]] *= img_size
         
-        # Create anchor boxes (point-based, we'll use a small box around each anchor)
-        anchor_size = 8.0  # Small fixed size for matching
+        # Create anchor boxes (point-based)
+        anchor_size = 8.0 # Small fixed size for matching
         anchor_boxes = torch.zeros((num_anchors, 4), device=device)
         anchor_boxes[:, 0] = anchors[:, 0] - anchor_size / 2
         anchor_boxes[:, 1] = anchors[:, 1] - anchor_size / 2
@@ -207,9 +190,9 @@ class TargetAssigner:
             is_in_box = torch.stack([l, t, r, b], dim=1).min(dim=1)[0] > 0
             is_in_boxes.append(is_in_box)
         
-        is_in_boxes = torch.stack(is_in_boxes, dim=1)  # (N_anchors, N_gt)
+        is_in_boxes = torch.stack(is_in_boxes, dim=1) # (N_anchors, N_gt)
         
-        # Also check center region (stricter constraint)
+        # Check center region (stricter constraint)
         gt_centers = (gt_boxes_abs[:, :2] + gt_boxes_abs[:, 2:]) / 2
         gt_wh = gt_boxes_abs[:, 2:] - gt_boxes_abs[:, :2]
         
@@ -232,7 +215,7 @@ class TargetAssigner:
             is_in_center = torch.stack([l, t, r, b], dim=1).min(dim=1)[0] > 0
             is_in_centers.append(is_in_center)
         
-        is_in_centers = torch.stack(is_in_centers, dim=1)  # (N_anchors, N_gt)
+        is_in_centers = torch.stack(is_in_centers, dim=1) # (N_anchors, N_gt)
         
         # Combine constraints
         is_in_gts = is_in_boxes & is_in_centers
@@ -269,13 +252,8 @@ class ContrastiveLoss(nn.Module):
         super().__init__()
         self.temperature = temperature
     
-    def forward(
-        self,
-        region_embeddings: torch.Tensor,
-        text_embeddings: torch.Tensor,
-        labels: torch.Tensor,
-        positive_mask: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, region_embeddings: torch.Tensor, text_embeddings: torch.Tensor, labels: torch.Tensor,
+                positive_mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             region_embeddings: (N_regions, D) normalized region embeddings
@@ -325,7 +303,6 @@ class FocalLoss(nn.Module):
     """
     Focal Loss for handling class imbalance
     """
-    
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
         self.alpha = alpha
@@ -358,18 +335,12 @@ class BoxLoss(nn.Module):
     """
     Bounding Box Loss (CIoU-based)
     """
-    
     def __init__(self, loss_type: str = 'ciou', eps: float = 1e-7):
         super().__init__()
         self.loss_type = loss_type
         self.eps = eps
     
-    def forward(
-        self, 
-        pred_boxes: torch.Tensor, 
-        target_boxes: torch.Tensor,
-        reduction: str = 'mean'
-    ) -> torch.Tensor:
+    def forward(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor, reduction: str = 'mean') -> torch.Tensor:
         """
         Args:
             pred_boxes: (N, 4) in xyxy format, normalized [0, 1]
@@ -480,7 +451,6 @@ class DFLLoss(nn.Module):
     Distribution Focal Loss for box regression
     Used in YOLOv8 for learning box distributions
     """
-    
     def __init__(self, reg_max: int = 16):
         super().__init__()
         self.reg_max = reg_max
@@ -526,17 +496,9 @@ class YOLOWorldLoss(nn.Module):
     """
     Complete YOLO-World Loss with proper target assignment and box decoding
     """
-    
-    def __init__(
-        self,
-        num_classes: int = 80,
-        box_loss_weight: float = 7.5,
-        cls_loss_weight: float = 0.5,
-        obj_loss_weight: float = 1.0,
-        contrastive_loss_weight: float = 1.0,
-        img_size: int = 640,
-        reg_max: int = 16
-    ):
+    def __init__(self, num_classes: int = 80, box_loss_weight: float = 7.5, cls_loss_weight: float = 0.5,
+                 obj_loss_weight: float = 1.0, contrastive_loss_weight: float = 1.0, img_size: int = 640,
+                 reg_max: int = 16):
         super().__init__()
         
         self.num_classes = num_classes
@@ -558,11 +520,7 @@ class YOLOWorldLoss(nn.Module):
         # Feature map strides
         self.strides = [8, 16, 32]
     
-    def forward(
-        self,
-        outputs: Dict,
-        targets: Dict
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, outputs: Dict, targets: Dict) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Compute total loss with proper target assignment and box decoding
         
@@ -575,17 +533,17 @@ class YOLOWorldLoss(nn.Module):
             loss_dict: Dictionary of individual losses
         """
         # Extract outputs
-        cls_logits = outputs['cls_logits']  # List of (B, N_vocab, H, W) per scale
-        box_preds = outputs['box_preds']    # List of (B, 4*(reg_max+1), H, W) per scale
-        obj_preds = outputs['obj_preds']    # List of (B, 1, H, W) per scale
-        region_embeds = outputs['region_embeds']  # List of (B, D, H, W) per scale
-        text_embeddings = outputs['text_embeddings']  # (N_vocab, D)
+        cls_logits = outputs['cls_logits'] # List of (B, N_vocab, H, W) per scale
+        box_preds = outputs['box_preds'] # List of (B, 4*(reg_max+1), H, W) per scale
+        obj_preds = outputs['obj_preds'] # List of (B, 1, H, W) per scale
+        region_embeds = outputs['region_embeds'] # List of (B, D, H, W) per scale
+        text_embeddings = outputs['text_embeddings'] # (N_vocab, D)
         
         # Extract targets
-        target_boxes = targets['boxes']  # (B, max_boxes, 4) in normalized xyxy
-        target_labels = targets['labels']  # (B, max_boxes)
-        num_boxes = targets['num_boxes']  # (B,)
-        label_to_vocab = targets.get('label_to_vocab', None)  # (num_classes,) mapping
+        target_boxes = targets['boxes'] # (B, max_boxes, 4) in normalized xyxy
+        target_labels = targets['labels'] # (B, max_boxes)
+        num_boxes = targets['num_boxes'] # (B,)
+        label_to_vocab = targets.get('label_to_vocab', None) # (num_classes,) mapping
         
         batch_size = target_boxes.shape[0]
         device = target_boxes.device
@@ -604,16 +562,16 @@ class YOLOWorldLoss(nn.Module):
         all_positive_masks = []
         
         for scale_idx, stride in enumerate(self.strides):
-            cls_logit = cls_logits[scale_idx]  # (B, N_vocab, H, W)
-            box_pred = box_preds[scale_idx]    # (B, 4*(reg_max+1), H, W)
-            obj_pred = obj_preds[scale_idx]    # (B, 1, H, W)
-            region_embed = region_embeds[scale_idx]  # (B, D, H, W)
+            cls_logit = cls_logits[scale_idx] # (B, N_vocab, H, W)
+            box_pred = box_preds[scale_idx] # (B, 4*(reg_max+1), H, W)
+            obj_pred = obj_preds[scale_idx] # (B, 1, H, W)
+            region_embed = region_embeds[scale_idx] # (B, D, H, W)
             
             B, N_vocab, H, W = cls_logit.shape
             _, D, _, _ = region_embed.shape
             
             # Generate anchors for this scale
-            anchors = generate_anchors((H, W), stride, device)  # (H*W, 2)
+            anchors = generate_anchors((H, W), stride, device) # (H*W, 2)
             
             # Decode box predictions to xyxy format
             decoded_boxes = decode_boxes(
@@ -621,7 +579,7 @@ class YOLOWorldLoss(nn.Module):
             )  # (B, H*W, 4) in absolute coordinates
             
             # Normalize decoded boxes
-            decoded_boxes = decoded_boxes / self.img_size  # Normalize to [0, 1]
+            decoded_boxes = decoded_boxes / self.img_size # Normalize to [0, 1]
             decoded_boxes = decoded_boxes.clamp(0, 1)
             
             # Flatten predictions
@@ -650,8 +608,8 @@ class YOLOWorldLoss(nn.Module):
                 # Classification and box loss (only for positive samples)
                 if positive_mask.sum() > 0:
                     # Classification loss
-                    pos_cls_logits = cls_logit_flat[b][positive_mask]  # (N_pos, N_vocab)
-                    pos_labels = assigned_labels[positive_mask]  # (N_pos,)
+                    pos_cls_logits = cls_logit_flat[b][positive_mask] # (N_pos, N_vocab)
+                    pos_labels = assigned_labels[positive_mask] # (N_pos,)
                     
                     # Remap labels to vocabulary indices
                     if label_to_vocab is not None:
@@ -694,11 +652,11 @@ class YOLOWorldLoss(nn.Module):
                 all_assigned_labels.append(assigned_labels)
                 all_positive_masks.append(positive_mask)
         
-        # Contrastive loss (align region embeddings with text embeddings)
+        # Contrastive loss
         if num_positive > 0 and len(all_region_embeds) > 0:
-            all_region_embeds = torch.cat(all_region_embeds, dim=0)  # (B*H*W, D)
-            all_assigned_labels = torch.cat(all_assigned_labels, dim=0)  # (B*H*W,)
-            all_positive_masks = torch.cat(all_positive_masks, dim=0)  # (B*H*W,)
+            all_region_embeds = torch.cat(all_region_embeds, dim=0) # (B*H*W, D)
+            all_assigned_labels = torch.cat(all_assigned_labels, dim=0) # (B*H*W,)
+            all_positive_masks = torch.cat(all_positive_masks, dim=0) # (B*H*W,)
             
             contrastive_loss = self.contrastive_loss_fn(
                 all_region_embeds,
