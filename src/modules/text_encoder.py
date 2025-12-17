@@ -13,7 +13,6 @@ class CLIPTextEncoder(nn.Module):
     """
     CLIP Text Encoder for encoding category names
     """
-    
     def __init__(self, model_name: str = "ViT-B/32", freeze: bool = True, device: str = "cuda"):
         super().__init__()
         
@@ -74,7 +73,6 @@ class TextAdapter(nn.Module):
     """
     Adapter to project CLIP text embeddings to desired dimension
     """
-    
     def __init__(self, text_dim: int = 512, output_dim: int = 256, dropout: float = 0.1):
         super().__init__()
         
@@ -101,7 +99,6 @@ class PromptEncoder(nn.Module):
     """
     Learnable prompt tokens that can be prepended to category names
     """
-    
     def __init__(self, num_prompts: int = 4, text_dim: int = 512, dropout: float = 0.1):
         super().__init__()
         
