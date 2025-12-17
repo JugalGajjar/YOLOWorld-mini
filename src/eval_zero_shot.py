@@ -28,7 +28,6 @@ from utils.device import get_available_device
 
 class ZeroShotEvaluator:
     """Evaluator for zero-shot detection with custom vocabulary"""
-    
     def __init__(self, config: dict, checkpoint_path: str, device: str = 'auto'):
         self.config = config
         
@@ -89,14 +88,14 @@ class ZeroShotEvaluator:
         """Preprocess image for inference"""
         try:
             img = Image.open(image_path).convert('RGB')
-            original_size = img.size  # (W, H)
+            original_size = img.size # (W, H)
             
             # Resize
             img = img.resize((img_size, img_size), Image.BILINEAR)
             
             # To tensor
             img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
-            img_tensor = img_tensor.permute(2, 0, 1)  # (3, H, W)
+            img_tensor = img_tensor.permute(2, 0, 1) # (3, H, W)
             
             return img_tensor.unsqueeze(0), original_size
             
@@ -105,14 +104,8 @@ class ZeroShotEvaluator:
             raise
     
     @torch.no_grad()
-    def predict(
-        self,
-        image_path: str,
-        category_names: List[str],
-        conf_threshold: float = 0.25,
-        iou_threshold: float = 0.7,
-        max_det: int = 300
-    ) -> Tuple[Dict, tuple, float]:
+    def predict(self, image_path: str, category_names: List[str], conf_threshold: float = 0.25,
+                iou_threshold: float = 0.7, max_det: int = 300) -> Tuple[Dict, tuple, float]:
         """Predict objects in image - FIXED denormalization"""
         # Preprocess
         img_tensor, original_size = self.preprocess_image(
@@ -136,7 +129,7 @@ class ZeroShotEvaluator:
         
         pred = predictions[0]
         
-        # CRITICAL FIX: Properly denormalize boxes
+        # Properly denormalize boxes
         if len(pred['boxes']) > 0:
             max_val = pred['boxes'].max().item()
             
@@ -144,13 +137,12 @@ class ZeroShotEvaluator:
             if max_val <= 1.5:
                 # Denormalize from [0,1] to model input size (640x640)
                 img_size = self.config['data']['img_size']
-                pred['boxes'][:, [0, 2]] *= img_size  # x coords
-                pred['boxes'][:, [1, 3]] *= img_size  # y coords
+                pred['boxes'][:, [0, 2]] *= img_size # x coords
+                pred['boxes'][:, [1, 3]] *= img_size # y coords
             
-            # Now scale from model input size to original image size
             img_size = self.config['data']['img_size']
-            scale_x = original_size[0] / img_size  # original_width / 640
-            scale_y = original_size[1] / img_size  # original_height / 640
+            scale_x = original_size[0] / img_size # original_width / 640
+            scale_y = original_size[1] / img_size # original_height / 640
             
             pred['boxes'][:, [0, 2]] *= scale_x
             pred['boxes'][:, [1, 3]] *= scale_y
@@ -164,13 +156,8 @@ class ZeroShotEvaluator:
         
         return pred, original_size, inference_time
     
-    def visualize_predictions(
-        self,
-        image_path: str,
-        predictions: Dict,
-        category_names: List[str],
-        save_path: str = None
-    ):
+    def visualize_predictions(self, image_path: str, predictions: Dict, category_names: List[str],
+                              save_path: str = None):
         """Visualize predictions with labels ON TOP of boxes"""
         # Load image
         img = Image.open(image_path).convert('RGB')
@@ -220,7 +207,7 @@ class ZeroShotEvaluator:
             label_text = f"{category_names[label]}: {score:.2f}"
             
             # Position label above box, but keep it in image bounds
-            label_y = max(15, y1 - 5)  # At least 15 pixels from top
+            label_y = max(15, y1 - 5) # At least 15 pixels from top
             
             ax.text(
                 x1, label_y,
@@ -243,15 +230,9 @@ class ZeroShotEvaluator:
         
         plt.close()
     
-    def evaluate_images(
-        self,
-        image_paths: List[str],
-        category_names: List[str],
-        output_dir: str = 'outputs/zero_shot',
-        conf_threshold: float = 0.25,
-        iou_threshold: float = 0.7,
-        save_viz: bool = True
-    ):
+    def evaluate_images(self, image_paths: List[str], category_names: List[str],
+                        output_dir: str = 'outputs/zero_shot', conf_threshold: float = 0.25,
+                        iou_threshold: float = 0.7, save_viz: bool = True):
         """Evaluate on multiple images"""
         os.makedirs(output_dir, exist_ok=True)
         
@@ -339,7 +320,7 @@ def main():
     else:
         raise ValueError("Must provide either --image or --image_dir")
     
-    print(f"\n📸 Found {len(image_paths)} images\n")
+    print(f"\nFound {len(image_paths)} images\n")
     
     # Evaluate
     evaluator.evaluate_images(
