@@ -16,7 +16,6 @@ class ContrastiveDetectionHead(nn.Module):
     Region-text contrastive detection head
     Uses cosine similarity for open-vocabulary classification
     """
-    
     def __init__(self, in_channels: List[int] = [256, 512, 512], num_anchors: int = 1,
                  reg_max: int = 16, text_dim: int = 512, temperature: float = 0.01):
         super().__init__()
@@ -136,7 +135,6 @@ class YOLOWorld(nn.Module):
     """
     YOLO-World: Open-Vocabulary Object Detector
     """
-    
     def __init__(self, yolo_model_path: str, text_encoder: nn.Module, repvl_pan: nn.Module = None,
                  num_classes: int = 80, text_dim: int = 512, reg_max: int = 16, freeze_backbone: bool = False):
         super().__init__()
