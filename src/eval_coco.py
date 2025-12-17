@@ -40,12 +40,11 @@ def get_coco_category_id(label_index: int) -> int:
     """Convert model label index (0-79) to COCO category ID"""
     if 0 <= label_index < len(COCO_CATEGORY_IDS):
         return COCO_CATEGORY_IDS[label_index]
-    return label_index + 1  # Fallback
+    return label_index + 1 # Fallback
 
 
 class COCOEvaluator:
     """COCO-style evaluation with proper metrics"""
-    
     def __init__(self, config: dict, checkpoint_path: str, device: str = 'auto'):
         self.config = config
         
@@ -123,15 +122,9 @@ class COCOEvaluator:
             raise
     
     @torch.no_grad()
-    def predict(
-        self,
-        image_path: str,
-        category_names: List[str],
-        conf_threshold: float = 0.001,
-        iou_threshold: float = 0.7,
-        max_det: int = 300
-    ) -> Tuple[Dict, float]:
-        """Predict objects in image - FIXED denormalization"""
+    def predict(self, image_path: str, category_names: List[str], conf_threshold: float = 0.001,
+                iou_threshold: float = 0.7, max_det: int = 300) -> Tuple[Dict, float]:
+        """Predict objects in image"""
         # Preprocess
         img_tensor, original_size = self.preprocess_image(
             image_path,
@@ -161,8 +154,8 @@ class COCOEvaluator:
             if max_val <= 1.5:
                 # Denormalize from [0,1] to model input size (640x640)
                 img_size = self.config['data']['img_size']
-                pred['boxes'][:, [0, 2]] *= img_size  # x coords
-                pred['boxes'][:, [1, 3]] *= img_size  # y coords
+                pred['boxes'][:, [0, 2]] *= img_size # x coords
+                pred['boxes'][:, [1, 3]] *= img_size # y coords
             
             # Scale from model input size to original image size
             img_size = self.config['data']['img_size']
@@ -197,7 +190,7 @@ class COCOEvaluator:
         per_category_metrics = {}
         
         for idx, cat_id in enumerate(cat_ids):
-            # Get category info - CHECK IF EXISTS
+            # Get category info
             cat_list = coco_gt.loadCats(cat_id)
             if not cat_list:
                 # Category doesn't exist, skip
@@ -239,16 +232,9 @@ class COCOEvaluator:
         
         return per_category_metrics
     
-    def evaluate_coco(
-        self,
-        ann_file: str,
-        img_dir: str,
-        category_names: List[str],
-        conf_threshold: float = 0.001,
-        iou_threshold: float = 0.7,
-        save_results: bool = True,
-        output_dir: str = 'outputs/coco_eval'
-    ):
+    def evaluate_coco(self, ann_file: str, img_dir: str, category_names: List[str],
+                      conf_threshold: float = 0.001, iou_threshold: float = 0.7, save_results: bool = True,
+                      output_dir: str = 'outputs/coco_eval'):
         """Evaluate on COCO dataset with official metrics"""
         os.makedirs(output_dir, exist_ok=True)
         
