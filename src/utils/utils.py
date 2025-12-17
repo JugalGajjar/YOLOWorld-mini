@@ -76,7 +76,6 @@ def set_seed(seed: int = 42):
 
 class AverageMeter:
     """Computes and stores the average and current value"""
-    
     def __init__(self):
         self.reset()
     
@@ -172,7 +171,7 @@ def box_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.
     while sorted_indices.numel() > 0:
         # Keep highest scoring box
         idx = sorted_indices[0]
-        keep.append(idx.item())  # <- Convert to Python int
+        keep.append(idx.item()) # <- Convert to Python int
         
         if sorted_indices.numel() == 1:
             break
